@@ -1,0 +1,42 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CudaCompile Include="main.cpp" />
+    <CudaCompile Include="src\cuda_homography.cu">
+      <Filter>src</Filter>
+    </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{29702512-617f-4f30-9cba-fcdb44d00bcd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{14e3eaec-cd34-4602-8bc7-01171f521a99}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\cuda_homography.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\image_handler.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\zncc_processor.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\camera_loader.h">
+      <Filter>include</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\image_handler.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\zncc_processor.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\camera_loader.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

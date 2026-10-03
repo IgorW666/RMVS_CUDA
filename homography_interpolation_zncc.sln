@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.37411.7 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "homography_interpolation_zncc", "homography_interpolation_zncc.vcxproj", "{F10C7332-FABF-045B-82D9-A8D95C741E04}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F10C7332-FABF-045B-82D9-A8D95C741E04}.Debug|x64.ActiveCfg = Debug|x64
+		{F10C7332-FABF-045B-82D9-A8D95C741E04}.Debug|x64.Build.0 = Debug|x64
+		{F10C7332-FABF-045B-82D9-A8D95C741E04}.Release|x64.ActiveCfg = Release|x64
+		{F10C7332-FABF-045B-82D9-A8D95C741E04}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {31ADE738-0425-4C15-8532-7675B5A2F3F4}
+	EndGlobalSection
+EndGlobal
