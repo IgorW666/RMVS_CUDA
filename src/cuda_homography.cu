@@ -138,7 +138,8 @@ void evaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* n
 
     if (x >= refWidth || y >= refHeight) return;
 
-    if (x == refWidth / 2 && y == refHeight / 2) {
+	// Debugging output for the center pixel (optional)
+    /*if (x == refWidth / 2 && y == refHeight / 2) {
         float* dRow = (float*)((char*)depthMap + y * depthPitch);
         float* nRow = (float*)((char*)normalMap + y * normalPitch);
         float3 rp = make_float3((float)x, (float)y, 1.0f);
@@ -151,7 +152,7 @@ void evaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* n
         printf("H0*p=(%f,%f,%f) e2=(%f,%f,%f) K1inv*p=(%f,%f,%f)\n",
             h.x, h.y, h.z, e2[0], e2[1], e2[2], q.x, q.y, q.z);
         printf("ok=%d uv=(%f,%f) target=%dx%d\n", (int)ok, uvDbg.x, uvDbg.y, targetWidth, targetHeight);
-    }
+    }*/
 
     float* depthRow = (float*)((char*)depthMap + y * depthPitch);
     float depth = depthRow[x];

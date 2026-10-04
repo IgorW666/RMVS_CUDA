@@ -14,6 +14,11 @@ ImageData ImageHandler::loadImageToGPU(const std::string& filename) {
         throw std::runtime_error("Failed to load image: " + filename);
     }
 
+    if (false) {    
+        cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+        clahe->apply(cpuImage, cpuImage);
+    }
+
     printf("DEBUG: Loaded image dimensions: %d x %d\n", cpuImage.cols, cpuImage.rows);
     printf("DEBUG: Image step: %zu bytes, %zu floats per row\n",
         (size_t)cpuImage.step[0], (size_t)cpuImage.step[0] / sizeof(float));
