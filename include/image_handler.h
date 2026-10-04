@@ -83,5 +83,13 @@ public:
      */
     void copyGPUToHost(const ImageData& image, float* hostData);
 
+    /**
+ * Copy GPU memory back to host as cv::Mat (float32).
+ *
+ * @param imageData GPU image data
+ * @return          cv::Mat with image data (CV_32F)
+ */
+    cv::Mat getImageFromGPU(const ImageData& imageData);
+
 private:
 };

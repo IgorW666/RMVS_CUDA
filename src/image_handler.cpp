@@ -141,3 +141,24 @@ void ImageHandler::copyGPUToHost(const ImageData& image, float* hostData) {
         throw std::runtime_error(std::string("GPU copy failed: ") + cudaGetErrorString(err));
     }
 }
+
+cv::Mat ImageHandler::getImageFromGPU(const ImageData& imageData) {
+    // Allocate host memory as contiguous array
+    float* hostData = new float[imageData.width * imageData.height];
+
+    try {
+        // Copy from GPU (pitch-aware)
+        copyGPUToHost(imageData, hostData);
+
+        // Create cv::Mat from contiguous host data
+        cv::Mat result(imageData.height, imageData.width, CV_32F);
+        memcpy(result.data, hostData, imageData.width * imageData.height * sizeof(float));
+
+        delete[] hostData;
+        return result;
+    }
+    catch (...) {
+        delete[] hostData;
+        throw;
+    }
+}
