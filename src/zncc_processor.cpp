@@ -22,21 +22,12 @@ void ZNCCProcessor::setCameraMatrices(const float* H0, const float* K1inv, const
     setupCameraMatrices(H0, K1inv, e2);
 }
 
-ZNCCProcessor::LaunchConfig ZNCCProcessor::getOptimalLaunchConfig() const {
-    LaunchConfig config;
-    config.blockDim = dim3(16, 16);
-    config.gridDim = dim3((imgWidth + 15) / 16, (imgHeight + 15) / 16);
-    return config;
-}
-
 ImageData ZNCCProcessor::computeZNCC(const ImageData& refImage, const ImageData& targetImage,
     const ImageData& depthMap, const ImageData& normalMap) {
     // Allocate output with pitch for consistency
     if (!znccOutput.gpuData) {
         cudaMallocPitch(&znccOutput.gpuData, &znccOutput.pitch, imgWidth * sizeof(float), imgHeight);
-    }
-
-    LaunchConfig config = getOptimalLaunchConfig();
+    }    
 
     // Call wrapper function with separate dimensions for ref and target images
     launchEvaluateZNCC(refImage.gpuData, targetImage.gpuData, depthMap.gpuData, normalMap.gpuData,

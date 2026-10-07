@@ -2,6 +2,14 @@
 
 #include <cuda_runtime.h>
 
+struct FrontierPoint
+{
+    int x;
+    int y;
+    float depth;   // from neighbor parent
+    float3 normal; // from neighbor parent
+};
+
 // ============================================================================
 // CUDA Kernel Launch Interface
 // ============================================================================
@@ -24,9 +32,9 @@ void launchEvaluateZNCC(float* refImage, float* targetImage, float* depthMap, fl
  * Evaluates ZNCC kernel (device code).
  */
 __global__
-void evaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* normalMap,
-    int refWidth, int refHeight, int targetWidth, int targetHeight, float* znccMat,
-    size_t refPitch, size_t targetPitch, size_t depthPitch, size_t normalPitch, size_t outPitch);
+void evaluateZNCC(float* refImage, float* targetImage, float* depthSteps, float* normaSteps,
+    int refWidth, int refHeight, int targetWidth, int targetHeight, float* result,
+    size_t refPitch, size_t targetPitch, size_t outPitch);
 
 // ============================================================================
 // Host-side CUDA Setup Functions
