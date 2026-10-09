@@ -27,6 +27,12 @@
     <ClInclude Include="include\camera_loader.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\normal_permutation_generator.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\types.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\image_handler.cpp">

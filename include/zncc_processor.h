@@ -1,6 +1,7 @@
 #pragma once
 
 #include "image_handler.h"
+#include "types.h"
 #include <cuda_runtime.h>
 
 
@@ -40,6 +41,9 @@ public:
     */
     void setCameraMatrices(const float* H0, const float* K1inv, const float* e2);    
 
+
+	void setNormalPermutations(const NormalPermutation* normalPermutations, int count); // normal permutations are small >> __constant__
+
     /**
      * Execute ZNCC computation.
      *
@@ -49,7 +53,12 @@ public:
      * @param normalMap     Normal map (GPU memory)
      * @return              Result ZNCC scores (GPU memory)
      */
-    ImageData computeZNCC(const ImageData& refImage, const ImageData& targetImage, const ImageData& depthMap, const ImageData& normalMap);
+    ImageData computeZNCC(
+        const ImageData& refImage,
+        const ImageData& targetImage,
+        const std::vector<FrontierPoint>& frontierPoints,
+        const std::vector<float>& depthSteps,
+        int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/ );
     
 private:
     int imgWidth;

@@ -1,12 +1,19 @@
 ﻿#include "include/zncc_processor.h"
 #include "include/image_handler.h"
 #include "include/camera_loader.h"
+#include "include/normal_permutation_generator.h"
 #include <iostream>
 #include <opencv2/opencv.hpp>
 #include <array>
 #include <iomanip>
 #include <sstream>
 #include <fstream>
+#include <cmath>
+
+const int WINDOW_RADIUS = 2; // window size will be 2 * WINDOW_RADIUS + 1
+const float DEPTH_MIN = 1.f;
+const float DEPTH_MAX = 5.f;
+const int DEPTH_STEPS = 16;
 
 struct HomographyParams {
     std::array<float, 9> H0;     // K2 * R * K1^-1
@@ -14,111 +21,71 @@ struct HomographyParams {
     std::array<float, 3> e2;     // K2 * t
 };
 
-// Plane-induced homography: H = K2 * (R + t * n^T / d) * K1^-1
+// plane induced homography: H = K2 * (R + t * n^T / d) * K1^-1
 // p' ~ H0 * p + (K2 * t) * (n^T * K1^-1 * p) / d
 /*HomographyParams calcHomographyParams( // in case tx,ty,tz are camera centers, not translation vectors
     const Camera& cam1,
-    const Camera& cam2)
-{
+    const Camera& cam2){
     cv::Mat K1 = cam1.intrinsics.camera_matrix;
     cv::Mat K2 = cam2.intrinsics.camera_matrix;
-
     // RealityScan R assumed to be camera -> world.
-    cv::Mat R =
-        cam2.extrinsics.rotation *
-        cam1.extrinsics.rotation.t();
-
+    cv::Mat R = cam.extrinsics.rotation * cam1.extrinsics.rotation.t();
     // RealityScan translation interpreted as camera center C
     // in world coordinates.
     cv::Mat C1 = cam1.extrinsics.translation;
-    cv::Mat C2 = cam2.extrinsics.translation;
-
-    // Relative translation expressed in camera 2 coordinates.
-    cv::Mat t =
-        cam2.extrinsics.rotation *
-        (C1 - C2);
-
+    cv::Mat C2 = cam2.extrinsics.translation;    
+    cv::Mat t = cam2.extrinsics.rotation * (C1 - C2);
     cv::Mat K1inv = K1.inv();
-
     cv::Mat H0 = K2 * R * K1inv;
     cv::Mat e2 = K2 * t;
-
     HomographyParams params;
-
-    for (int i = 0; i < 3; ++i)
-    {
-        for (int j = 0; j < 3; ++j)
-        {
-            params.H0[i * 3 + j] =
-                static_cast<float>(H0.at<double>(i, j));
-
-            params.K1inv[i * 3 + j] =
-                static_cast<float>(K1inv.at<double>(i, j));
+    for (int i = 0; i < 3; ++i)    {
+        for (int j = 0; j < 3; ++j)        {
+            params.H0[i * 3 + j] = static_cast<float>(H0.at<double>(i, j));
+            params.K1inv[i * 3 + j] = static_cast<float>(K1inv.at<double>(i, j));
         }
-
-        params.e2[i] =
-            static_cast<float>(e2.at<double>(i, 0));
+        params.e2[i] = static_cast<float>(e2.at<double>(i, 0));
     }
-
     return params;
 }*/
 
 HomographyParams calcHomographyParams( // in case tx,ty,tz are translation vectors, not camera centers
     const Camera& cam1,
-    const Camera& cam2)
-{
+    const Camera& cam2){
     cv::Mat K1 = cam1.intrinsics.camera_matrix;
-    cv::Mat K2 = cam2.intrinsics.camera_matrix;
-
-    // Relative rotation: camera 1 -> camera 2.
-    cv::Mat R =
-        cam2.extrinsics.rotation *
-        cam1.extrinsics.rotation.t();
-
-    // RealityScan translation interpreted as the
-    // conventional OpenCV extrinsic t in:
-    //
-    // X_camera = R * X_world + t
-    //
+    cv::Mat K2 = cam2.intrinsics.camera_matrix;   
+    cv::Mat R = cam2.extrinsics.rotation * cam1.extrinsics.rotation.t();  // relative rotation: camera 1 -> camera 2
     cv::Mat t1 = cam1.extrinsics.translation;
-    cv::Mat t2 = cam2.extrinsics.translation;
-
-    // Relative translation.
-    cv::Mat t =
-        t2 - R * t1;
-
+    cv::Mat t2 = cam2.extrinsics.translation;   
+    cv::Mat t = 2 - R * t1;  // relative translation
     cv::Mat K1inv = K1.inv();
-
     cv::Mat H0 = K2 * R * K1inv;
     cv::Mat e2 = K2 * t;
-
     HomographyParams params;
-
-    for (int i = 0; i < 3; ++i)
-    {
-        for (int j = 0; j < 3; ++j)
-        {
-            params.H0[i * 3 + j] =
-                static_cast<float>(H0.at<double>(i, j));
-
-            params.K1inv[i * 3 + j] =
-                static_cast<float>(K1inv.at<double>(i, j));
+    for (int i = 0; i < 3; ++i)    {
+        for (int j = 0; j < 3; ++j)        {
+            params.H0[i * 3 + j] = static_cast<float>(H0.at<double>(i, j));
+            params.K1inv[i * 3 + j] = static_cast<float>(K1inv.at<double>(i, j));
         }
-
-        params.e2[i] =
-            static_cast<float>(e2.at<double>(i, 0));
+        params.e2[i] = static_cast<float>(e2.at<double>(i, 0));
     }
-
     return params;
 }
 
-const int WINDOW_RADIUS = 4;
-const float DEPTH_MIN = 0.f;
-const float DEPTH_MAX = 5.0f;
-const int DEPTH_STEPS = 10000;
+std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna be so much fun to debug it with disparity :/
+	std::vector<float> depthSteps(steps); // hope this is enough to make it contiguous    
+	int startIdx = -steps / 2;
+    for (int i = 0; i < steps; ++i) {
+        depthSteps[i] = (startIdx + i) * interval; // ooor I could make it into disparity here
+	}
+    return depthSteps;
+}
 
 int main() {
-    try {
+    //try {
+
+		NormalPermutationGenerator normalPermGen(16);
+		std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(5.0f); // 5 degrees cone angle        
 
 		std::vector<Camera> cameras;
 
@@ -129,32 +96,38 @@ int main() {
 
         ImageHandler imageHandler;
         
-        std::cout << "Loading images...\n";
         ImageData refImage = imageHandler.loadImageToGPU("data\\budda\\img\\41454.jpg"); // idx 0
-        ImageData targetImage = imageHandler.loadImageToGPU("data\\budda\\img\\41457.jpg"); // idx 6
+        ImageData targetImage = imageHandler.loadImageToGPU("data\\budda\\img\\41455.jpg"); // idx 1
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;        
 
-        ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);		
+        ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);	
 
-        HomographyParams hp = calcHomographyParams(cameras[0], cameras[3]);
+		FrontierPoint frontierPoint = {IMG_WIDTH / 2, IMG_HEIGHT / 2, 3.0f, {0.0f, 0.0f, 1.0f}};
+
+		std::vector<float> depthSteps = generateDepthSteps(0.25f, DEPTH_STEPS);
+
+		std::vector<FrontierPoint> frontierPoints = { frontierPoint };
+
+        HomographyParams hp = calcHomographyParams(cameras[0], cameras[1]);
         processor.setCameraMatrices(hp.H0.data(), hp.K1inv.data(), hp.e2.data());
+		processor.setNormalPermutations(normalPermutations.data(), normalPermutations.size());
 
-        ImageData result = processor.computeZNCC(refImage, targetImage, depthMap, normalMap);
+        ImageData result = processor.computeZNCC(refImage, targetImage, frontierPoints, depthSteps, normalPermutations.size());
         
         cv::Mat resultHost = imageHandler.getImageFromGPU(result);
 
-        imageHandler.freeGPUImage(depthMap);              
-        imageHandler.freeGPUImage(normalMap);
+        //imageHandler.freeGPUImage(depthMap);              
+        //imageHandler.freeGPUImage(normalMap);
         imageHandler.freeGPUImage(refImage);
         imageHandler.freeGPUImage(targetImage);
 
         std::cout << "Done!\n";
         return 0;
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
-    }
+    //}
+    //catch (const std::exception& e) {
+    //    std::cerr << "Error: " << e.what() << "\n";
+    //    return 1;
+    //}
 }

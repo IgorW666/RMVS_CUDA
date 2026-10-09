@@ -1,18 +1,15 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include "types.h"
 
-struct FrontierPoint
+/*struct FrontierPoint // moved to types.h
 {
     int x;
     int y;
     float depth;   // from neighbor parent
     float3 normal; // from neighbor parent
-};
-
-// ============================================================================
-// CUDA Kernel Launch Interface
-// ============================================================================
+};*/
 
 /**
  * Evaluates ZNCC (Zero-mean Normalized Cross-Correlation) for depth map
@@ -20,25 +17,36 @@ struct FrontierPoint
  *
  * @param refWidth/refHeight        Reference image size (also depth/normal/output size)
  * @param targetWidth/targetHeight  Target image size
- * @param *Pitch                    Row pitch in bytes of the respective buffer
  */
-void launchEvaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* normalMap,
-    int refWidth, int refHeight, int targetWidth, int targetHeight, float* znccMat,
-    size_t refPitch, size_t targetPitch, size_t depthPitch, size_t normalPitch,
-    unsigned int blockX, unsigned int blockY, unsigned int gridX, unsigned int gridY,
-    size_t outPitch);
+void launchEvaluateZNCC(const float* refImg,
+    const float* targetImg,
+    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+    float* result,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int targetWidth,
+    int targetHeight,
+    int frontierCount); // <-- added frontierCount parameter
 
 /**
  * Evaluates ZNCC kernel (device code).
  */
 __global__
-void evaluateZNCC(float* refImage, float* targetImage, float* depthSteps, float* normaSteps,
-    int refWidth, int refHeight, int targetWidth, int targetHeight, float* result,
-    size_t refPitch, size_t targetPitch, size_t outPitch);
+void evaluateZNCC(const float* refImg,
+    const float* targetImg,
+    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+    float* result,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int targetWidth,
+    int targetHeight);
 
-// ============================================================================
-// Host-side CUDA Setup Functions
-// ============================================================================
 
 /**
  * Copies camera data to device constant memory.
@@ -48,6 +56,9 @@ void evaluateZNCC(float* refImage, float* targetImage, float* depthSteps, float*
  * @param e2_host     3-vector K2 * t
  */
 void setupCameraMatrices(const float* h0_host, const float* k1inv_host, const float* e2_host);
+
+
+void setupNormalPermutations(const NormalPermutation* normalPermutations, int count);
 
 /**
  * Sets the ZNCC window radius in device constant memory.
