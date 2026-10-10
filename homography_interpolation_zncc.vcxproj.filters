@@ -33,6 +33,9 @@
     <ClInclude Include="include\types.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\helper_math.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\image_handler.cpp">

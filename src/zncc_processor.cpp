@@ -35,16 +35,6 @@ ImageData ZNCCProcessor::computeZNCC(
     const std::vector<float>& depthSteps,
     int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/ ) {
 
-    //const ImageData& depthMap, const ImageData& normalMap) {
-    // Allocate output with pitch for consistency
-    //if (!znccOutput.gpuData) { cudaMallocPitch(&znccOutput.gpuData, &znccOutput.pitch, imgWidth * sizeof(float), imgHeight); }       
-
-    // we need:
-	// FrontierPoint* frontier // that should probably be allocated to GPU here and passed to the kernel
-    // float* depthSteps       // not really sure about this yet
-	// float* result
-	// NormalPermutation * normalSteps
-
     const int frontierCount = static_cast<int>(frontierPoints.size());
 
     FrontierPoint* frontierPtr = nullptr;
@@ -86,6 +76,7 @@ ImageData ZNCCProcessor::computeZNCC(
     checkCudaError("computeZNCC kernel launch");
 
 	cv::Mat resultMat(targetImage.height, targetImage.width, CV_32F, cv::Scalar(0.f));
+    cv::Mat resultMatx4(targetImage.height*4, targetImage.width*4, CV_32F, cv::Scalar(0.f));
 
 	// Copy result back to host (allocate host vector)
 	std::vector<float> resultHost;
@@ -105,26 +96,44 @@ ImageData ZNCCProcessor::computeZNCC(
 	int validCount = 0;
 
     for (int i = 0; i < resultUVs; ++i) {
-		float uf = resultHost[i * 2];
-		float vf = resultHost[i * 2 + 1];
+		float xf = resultHost[i * 2];
+		float yf = resultHost[i * 2 + 1];
+
+		float yfx4 = yf * 4.f;
+		float xfx4 = xf * 4.f;
 
 		// invalid marker from kernel is -1.f
-        if (uf < 0.f || vf < 0.f || uf >= static_cast<float>(targetImage.width) || vf >= static_cast<float>(targetImage.height)) {
+        if (xf < 0.f || yf < 0.f || xf >= static_cast<float>(targetImage.width) || yf >= static_cast<float>(targetImage.height)) {
 			// skip invalid coordinates
             continue;
 		}
 
-		int u = static_cast<int>(std::round(uf));
-		int v = static_cast<int>(std::round(vf));
+		int x = static_cast<int>(std::round(xf));
+		int y = static_cast<int>(std::round(yf));
 
-        if (u < 0 || u >= targetImage.width || v < 0 || v >= targetImage.height) {
+        if (x < 0 || x >= targetImage.width || y < 0 || y >= targetImage.height) {
             continue;
         }
 
-		resultMat.at<float>(v, u) = 1.f;
+        const int pairsPerWindow = windowSize * windowSize;                  // W*W
+        const int pairsPerNormal = pairsPerWindow;                          // W*W
+        const int pairsPerDepth = normalNSteps * pairsPerNormal;            // N * W*W
+        const int pairsPerFrontier = depthCount * pairsPerDepth;            // D * N * W*W
+
+        const int frontierIdx = i / pairsPerFrontier;
+        const int withinFrontier = i % pairsPerFrontier;
+
+        int depthHypothesisIdx = withinFrontier / pairsPerDepth;
+        int normalHypothesisIdx = (withinFrontier / pairsPerNormal) % normalNSteps;
+
+		//std::cout << "Valid coordinate : (" << xf << ", " << yf << ") at depth hypothesis index : " << depthHypothesisIdx << ", normal hypothesis index : " << normalHypothesisIdx << std::endl;
+
+		resultMat.at<float>(y, x) = 1.f;
+		resultMatx4.at<float>(static_cast<int>(std::round(yfx4)), static_cast<int>(std::round(xfx4))) = 1.f;
 		validCount++;
 	}
 
+	std::cout << "There should be " << resultUVs << " valid coordinates\n";
 	std::cout << "Total valid count: " << validCount << ", ~NWindows : " << validCount / (windowSize * windowSize) << std::endl;
 
     // Upload resultMat to GPU and return as ImageData (znccOutput)
