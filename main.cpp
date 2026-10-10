@@ -10,7 +10,7 @@
 #include <fstream>
 #include <cmath>
 
-const int WINDOW_RADIUS = 1; // window size will be 2 * WINDOW_RADIUS + 1
+const int WINDOW_RADIUS = 2; // window size will be 2 * WINDOW_RADIUS + 1
 const int DEPTH_STEPS = 16;
 
 struct HomographyParams {
@@ -59,9 +59,10 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
 
 int main() {
     //try {
-
+	    const float coneAngleDegrees = 15.0f; // 5 degrees cone angle
 		NormalPermutationGenerator normalPermGen(16);
-		std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(3.0f, true); // 5 degrees cone angle        
+		std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(coneAngleDegrees, true); // 5 degrees cone angle        
+        normalPermGen.saveNormalsAsXyz("normals_debug.xyz", coneAngleDegrees);
 
 		std::vector<Camera> cameras;
 
@@ -83,7 +84,7 @@ int main() {
 		FrontierPoint frontierPoint1 = {IMG_WIDTH / 2, IMG_HEIGHT / 2, 20.f, {0.0f, 0.0f, 1.0f}};
         FrontierPoint frontierPoint2 = { IMG_WIDTH / 2 + 10, IMG_HEIGHT / 2, 20.f, {0.0f, 0.0f, 1.0f} };
 
-		std::vector<float> depthSteps = generateDepthSteps(0.05f, DEPTH_STEPS);
+		std::vector<float> depthSteps = generateDepthSteps(0.01f, DEPTH_STEPS);
 
 		std::vector<FrontierPoint> frontierPoints = { frontierPoint1 };
 

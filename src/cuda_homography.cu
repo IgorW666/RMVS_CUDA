@@ -36,7 +36,24 @@ bool projectSample(float3 referencePoint, float depth, float3 normal, float2& xy
     return true;
 }
 
-__global__
+/*bool projectSample2(float3 referencePoint, float planeOffset, float3 normal, float2& xy) {
+    float3 q = matmul3x3_point(K1inv, referencePoint);
+    float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / planeOffset;
+    float3 h = matmul3x3_point(H0, referencePoint);
+    float3 p = make_float3(
+        h.x + e2[0] * s,
+        h.y + e2[1] * s,
+        h.z + e2[2] * s
+    );
+    if (p.z <= 1e-6f)
+        return false;
+    xy = make_float2(p.x / p.z, p.y / p.z);
+    return true;
+}*/
+
+
+
+/*__global__
 void evaluateZNCC(
     const float* refImg,
     const float* targetImg,
@@ -166,7 +183,160 @@ void evaluateZNCC(
             }
         }
     }
+}*/
+
+__global__
+void evaluateZNCC(
+    const float* refImg,
+    const float* targetImg,
+    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+    float* result,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int targetWidth,
+    int targetHeight)
+{
+    const int frontierIndex = blockIdx.x;
+
+    const int hypothesis = threadIdx.x;
+
+    const int depthIndex = hypothesis / normalNSteps;
+
+    const int normalIndex = hypothesis % normalNSteps;
+
+    // Required: the launch must provide at least
+    // depthNSteps * normalNSteps threads per block.
+    if (depthIndex >= depthNSteps)
+        return;
+
+    FrontierPoint parent = frontier[frontierIndex];
+
+    // Camera-axis Z depth of the center point for this depth hypothesis.
+    //const float depth = parent.depth * depthSteps[depthIndex];
+    const float depth = parent.depth + depthSteps[depthIndex];
+
+    if (depth <= 0.0f)
+        return;
+
+    const int refX = parent.x;
+    const int refY = parent.y;
+
+    NormalPermutation perm = normalPermutations[normalIndex];
+
+    float3 parentNormal = normalize(parent.normal);
+
+    float3 parentTangent;
+    float3 parentBitangent;
+    float3 reference;
+
+    if (fabsf(parentNormal.z) < 0.999f) {
+        reference = make_float3(0.0f, 0.0f, 1.0f);
+    }
+    else {
+        reference = make_float3(0.0f, 1.0f, 0.0f);
+    }
+
+    // Build an orthonormal tangent frame around the parent normal.
+    parentTangent = normalize(cross(reference, parentNormal));
+    parentBitangent = normalize(cross(parentNormal, parentTangent));
+
+    float3 normVec = normalize(
+        parentNormal
+        + perm.tangent * parentTangent
+        + perm.bitangent * parentBitangent
+    );
+
+    // ------------------------------------------------------------
+    // Reconstruct the fixed 3D pivot point at the center of the
+    // reference window.
+    //
+    // Assumption: depth is camera-axis Z depth in camera 1 space.
+    // K1inv maps pixels to rays in camera 1 coordinates.
+    // ------------------------------------------------------------
+
+    float3 centerPixel = make_float3(
+        static_cast<float>(refX),
+        static_cast<float>(refY),
+        1.0f
+    );
+
+    float3 centerRay = matmul3x3_point(K1inv, centerPixel);
+
+    // A conventional pinhole camera produces centerRay.z ~= 1.
+    // Divide by ray.z to support a general invertible K matrix.
+    if (fabsf(centerRay.z) < 1e-8f)
+        return;
+
+    float rayScale = depth / centerRay.z;
+
+    float3 pivotPoint = make_float3(
+        centerRay.x * rayScale,
+        centerRay.y * rayScale,
+        centerRay.z * rayScale
+    );
+
+    const float planeOffset =
+        normVec.x * pivotPoint.x
+        + normVec.y * pivotPoint.y
+        + normVec.z * pivotPoint.z;
+
+    if (fabsf(planeOffset) < 1e-8f)
+        return;
+
+    const int windowSize = 1 + 2 * windowRadius;
+
+    const int xStride = 2;
+
+    const int yStride = windowSize * xStride;
+
+    const int normalStride = windowSize * yStride;
+
+    const int depthStride = normalNSteps * normalStride;
+
+    const int frontierStride = depthNSteps * depthStride;
+
+    for (int winY = -windowRadius; winY <= windowRadius; ++winY)
+    {
+        const float refPtYf = static_cast<float>(refY + winY);
+
+        for (int winX = -windowRadius; winX <= windowRadius; ++winX)
+        {
+            const float refPtXf = static_cast<float>(refX + winX);
+
+            float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
+
+            float2 xy;
+
+            bool valid = projectSample(refPt, planeOffset, normVec, xy);
+
+            const int winXIndex = winX + windowRadius;
+
+            const int winYIndex = winY + windowRadius;
+
+            const int resultIdx =
+                frontierIndex * frontierStride
+                + depthIndex * depthStride
+                + normalIndex * normalStride
+                + winYIndex * yStride
+                + winXIndex * xStride;
+
+            if (valid)
+            {
+                result[resultIdx + 0] = xy.x;
+                result[resultIdx + 1] = xy.y;
+            }
+            else
+            {
+                result[resultIdx + 0] = -1.f;
+                result[resultIdx + 1] = -1.f;
+            }
+        }
+    }
 }
+
 
 void launchEvaluateZNCC(const float* refImg,
     const float* targetImg,
