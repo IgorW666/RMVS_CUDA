@@ -15,18 +15,11 @@
 
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
-const int WINDOW_RADIUS = 3;
-const int DEPTH_STEPS = 16;
-const float CONE_ANGLE_DEGREES = 5.0f;
-const float DEPTH_STEP_SIZE = 0.01f;
-const float BEST_CAMERA_ANGLE_DEGREES = 30.0f; 
-
-// move to types.h
-struct HomographyParams {
-    std::array<float, 9> H0;     // K2 * R * K1^-1
-    std::array<float, 9> K1inv;  // K1^-1
-    std::array<float, 3> e2;     // K2 * t
-};
+const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
+const int DEPTH_STEPS = 32;                     // originally 16, 32 doesn't seem to improve anything
+const float CONE_ANGLE_DEGREES = 10.0f;         // 5.f this has to change. I need more then 1 angle permutation
+const float DEPTH_STEP_SIZE = 0.0001f;          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
+const float BEST_CAMERA_ANGLE_DEGREES = 15.0f;  // dont know yet. in theory this should be 25-30
 
 // move helpers to another file
 HomographyParams calcHomographyParams2(const Camera& cam1, const Camera& cam2);
@@ -45,13 +38,13 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
-	std::string folderPath = "data\\buddaFull\\"; 
+	std::string folderPath = "data\\dFountain\\"; 
 
     std::vector<Camera> cameras;
 
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\buddaFull\\budda.csv");        
+        cameras = cameraLoader.loadFromCSV("data\\dFountain\\fountain.csv");        
     }
 
 	std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);	
@@ -73,7 +66,9 @@ int main() {
         float avgDepth = 0.0f; // stat 38.11, 142.32
 
         CloudLoader cloudLoader; // make static !
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\buddaFull\\budda.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\dFountain\\fountain.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+
+		float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
@@ -82,7 +77,7 @@ int main() {
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
-        std::vector<float> depthSteps = generateDepthSteps(DEPTH_STEP_SIZE, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
+        std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
 
         HomographyParams hp = calcHomographyParams2(cameras[bestCameraPair.first], cameras[bestCameraPair.second]);
         processor.setCameraMatrices(hp.H0.data(), hp.K1inv.data(), hp.e2.data());
@@ -117,7 +112,7 @@ int main() {
 
         while (!frontierPoints.empty() && iteration < maxIterations) {
             ++iteration;
-            std::cout << "Iteration " << iteration << ", frontier size: " << frontierPoints.size() << "\r" << std::flush;
+            std::cout << "Iteration " << iteration << ", frontier size: " << frontierPoints.size() << "                \r" << std::flush;
 
             // Remove original SFM points once before running ZNCC so they won't be re-added to the results
             if (REMOVE_SFM_POINTS && iteration == 1) {
@@ -181,7 +176,7 @@ int main() {
         cv::destroyAllWindows();
         depthMapInit = depthMap;
 
-        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(DEPTH_STEP_SIZE) + ".xyz";
+        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
 
         saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[bestCameraPair.first]);
 
