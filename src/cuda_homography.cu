@@ -136,11 +136,8 @@ void evaluateZNCC(
     int targetHeight)
 {
     const int frontierIndex = blockIdx.x;
-
     const int hypothesis = threadIdx.x;
-
     const int depthIndex = hypothesis / normalNSteps;
-
     const int normalIndex = hypothesis % normalNSteps;
 
     // Required: the launch must provide at least
@@ -223,19 +220,12 @@ void evaluateZNCC(
         return;
 
     const int windowSize = 1 + 2 * windowRadius;
-
     const int xStride = 2;
-
     const int yStride = windowSize * xStride;
-
     const int normalStride = windowSize * yStride;
-
     const int depthStride = normalNSteps * normalStride;
-
     const int frontierStride = depthNSteps * depthStride;
     
-    //
-
     float sum_ref = 0.0f;
     float sum_target = 0.0f;
     float sum_sq_ref = 0.0f;
@@ -262,12 +252,13 @@ void evaluateZNCC(
 
             const int winYIndex = winY + windowRadius;
 
-            const int resultIdx =
-                frontierIndex * frontierStride
-                + depthIndex * depthStride
-                + normalIndex * normalStride
-                + winYIndex * yStride
-                + winXIndex * xStride;
+            // not using this anymore, result is now per window
+            //const int resultIdx =
+            //    frontierIndex * frontierStride
+            //   + depthIndex * depthStride
+            //   + normalIndex * normalStride
+            //   + winYIndex * yStride
+            //   + winXIndex * xStride;
 
 			float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
 
@@ -277,11 +268,17 @@ void evaluateZNCC(
             float target_val = interpolateTarget(targetImg, targetWidth, targetHeight, uv, targetPitch);
 
             accumulateZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, ref_val, target_val);
-
         }
     }
 
-	float zncc = finishZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, windowSize * windowSize);
+    float zncc = finishZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, windowSize * windowSize);
+
+    int resultIdx =
+        frontierIndex * (depthNSteps * normalNSteps)
+        + depthIndex * normalNSteps
+        + normalIndex;
+
+    result[resultIdx] = zncc;
 }
 
 

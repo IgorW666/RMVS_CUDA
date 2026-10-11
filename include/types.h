@@ -15,7 +15,11 @@ struct FrontierPoint
     float3 normal; // from neighbor parent
 };
 
-//struct DepthStep
-//{
-//	float depthMult; // depth multiplier for the current step    
-//};
+struct ResultPoint
+{
+    int x;
+    int y;
+    float depth;
+    float3 normal;
+	float znccScore = -1.f;
+};

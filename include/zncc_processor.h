@@ -53,7 +53,7 @@ public:
      * @param normalMap     Normal map (GPU memory)
      * @return              Result ZNCC scores (GPU memory)
      */
-    ImageData computeZNCC(
+    std::vector<ResultPoint> computeZNCC(
         const ImageData& refImage,
         const ImageData& targetImage,
         const std::vector<FrontierPoint>& frontierPoints,

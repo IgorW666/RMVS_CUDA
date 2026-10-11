@@ -28,12 +28,12 @@ void ZNCCProcessor::setNormalPermutations(const NormalPermutation* normalPermuta
     setupNormalPermutations(normalPermutations, count);
 }
 
-ImageData ZNCCProcessor::computeZNCC(
+std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
     const ImageData& refImage,
     const ImageData& targetImage,
     const std::vector<FrontierPoint>& frontierPoints,
     const std::vector<float>& depthSteps,
-    int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/ ) {
+    int normalNSteps) {
 
     const int frontierCount = static_cast<int>(frontierPoints.size());
     
@@ -54,15 +54,13 @@ ImageData ZNCCProcessor::computeZNCC(
     
     setImagePitches(refImage.pitch, targetImage.pitch);
 
-	// compute expected result size (floats)
-    const int windowSize = 1 + 2 * windowRadius;
-	const int resultFloatsPerFrontier = depthCount * normalNSteps * windowSize * windowSize * 2;
-	const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;
-	
-	
+	// the results changed. Now we have a zncc score for depth/normal permutation for each frontier point
+	// So the result array will be of size (frontierCount * depthCount * normmalNSteps)    
+	const int resultFloatsPerFrontier = depthCount * normalNSteps;
+	const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;	
 
 	float* result = nullptr;
-	cudaMalloc((void**)&result, resultFloatsTotal * sizeof(float));
+	cudaMalloc((void**)&result, resultFloatsTotal * sizeof(float)); // would be cool to initialize to -1.f
     
     // Call wrapper function with separate dimensions for ref and target images
     launchEvaluateZNCC(
@@ -81,11 +79,13 @@ ImageData ZNCCProcessor::computeZNCC(
 
     checkCudaError("computeZNCC kernel launch");
 
-	cv::Mat resultMat(targetImage.height, targetImage.width, CV_32F, cv::Scalar(0.f));
-    cv::Mat resultMatx4(targetImage.height*4, targetImage.width*4, CV_32F, cv::Scalar(0.f));
+	//cv::Mat resultMat(targetImage.height, targetImage.width, CV_32F, cv::Scalar(0.f));
+    //cv::Mat resultMatx4(targetImage.height*4, targetImage.width*4, CV_32F, cv::Scalar(0.f));
 
 	// Copy result back to host (allocate host vector)
 	std::vector<float> resultHost;
+	std::vector<ResultPoint> validResults;
+	
 	resultHost.resize(resultFloatsTotal);
 	cudaMemcpy(resultHost.data(), result, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost);
 	err = cudaGetLastError();
@@ -97,11 +97,11 @@ ImageData ZNCCProcessor::computeZNCC(
 	    throw std::runtime_error(std::string("cudaMemcpy DeviceToHost failed: ") + cudaGetErrorString(err));
 	}
 
-    int resultUVs = resultFloatsTotal / 2;
+    //int resultUVs = resultFloatsTotal / 2;
 
 	int validCount = 0;
 
-    for (int i = 0; i < resultUVs; ++i) {
+    /*for (int i = 0; i < resultUVs; ++i) {
 		float xf = resultHost[i * 2];
 		float yf = resultHost[i * 2 + 1];
 
@@ -137,30 +137,30 @@ ImageData ZNCCProcessor::computeZNCC(
 		resultMat.at<float>(y, x) = 1.f;
 		resultMatx4.at<float>(static_cast<int>(std::round(yfx4)), static_cast<int>(std::round(xfx4))) = 1.f;
 		validCount++;
-	}
+	}*/
 
-	std::cout << "There should be " << resultUVs << " valid coordinates\n";
-	std::cout << "Total valid count: " << validCount << ", ~NWindows : " << validCount / (windowSize * windowSize) << std::endl;
+	//std::cout << "There should be " << resultUVs << " valid coordinates\n";
+	//std::cout << "Total valid count: " << validCount << ", ~NWindows : " << validCount / (windowSize * windowSize) << std::endl;
 
     // Upload resultMat to GPU and return as ImageData (znccOutput)
     size_t bytes = static_cast<size_t>(targetImage.width) * static_cast<size_t>(targetImage.height) * sizeof(float);
 
-    // free previous gpuData if any
-    if (znccOutput.gpuData) {
-        cudaFree(znccOutput.gpuData);
-        znccOutput.gpuData = nullptr;
-    }
+    // free previous gpuData if any << not using ImageData as output anymore
+    //if (znccOutput.gpuData) {
+    //    cudaFree(znccOutput.gpuData);
+    //    znccOutput.gpuData = nullptr;
+    //}
 
-    cudaMalloc((void**)&znccOutput.gpuData, bytes);
-    cudaMemcpy(znccOutput.gpuData, resultMat.ptr<float>(0), bytes, cudaMemcpyHostToDevice);
-    znccOutput.width = targetImage.width;
-    znccOutput.height = targetImage.height;
-    znccOutput.pitch = 0; // not using pitched allocation here
+    //cudaMalloc((void**)&znccOutput.gpuData, bytes);
+    //cudaMemcpy(znccOutput.gpuData, resultMat.ptr<float>(0), bytes, cudaMemcpyHostToDevice);
+    //znccOutput.width = targetImage.width;
+    //znccOutput.height = targetImage.height;
+    //znccOutput.pitch = 0; // not using pitched allocation here
 
     // cleanup temporaries
     cudaFree(frontierPtr);
     cudaFree(depthStepsPtr);
     cudaFree(result);
 
-    return znccOutput;
+    return validResults;
 }

@@ -129,7 +129,7 @@ int main() {
 		float fp3depth = depthMap0.at<float>(fp3y, fp3x); // 20.f for calcHomographyParams1
         FrontierPoint frontierPoint3 = { fp3x, fp3y, fp3depth, {0.f,0.f,1.f} };
 
-		std::vector<float> depthSteps = generateDepthSteps(10.0f, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
+		std::vector<float> depthSteps = generateDepthSteps(0.01f, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
 
 		std::vector<FrontierPoint> frontierPoints = { frontierPoint3 };
 
@@ -137,9 +137,9 @@ int main() {
         processor.setCameraMatrices(hp.H0.data(), hp.K1inv.data(), hp.e2.data());
 		processor.setNormalPermutations(normalPermutations.data(), normalPermutations.size());
 
-        ImageData result = processor.computeZNCC(refImage, targetImage, frontierPoints, depthSteps, normalPermutations.size());
+        std::vector<ResultPoint> result = processor.computeZNCC(refImage, targetImage, frontierPoints, depthSteps, normalPermutations.size());
         
-        cv::Mat resultHost = imageHandler.getImageFromGPU(result);
+        //cv::Mat resultHost = imageHandler.getImageFromGPU(result);
 
         //imageHandler.freeGPUImage(depthMap);              
         //imageHandler.freeGPUImage(normalMap);
