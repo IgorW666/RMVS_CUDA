@@ -1,6 +1,8 @@
 #pragma once
 #include <cuda_runtime.h> // just for float3... meh
 #include <array>
+#include <string>
+#include <vector>
 
 struct NormalPermutation
 {

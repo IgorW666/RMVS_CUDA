@@ -18,7 +18,7 @@ const bool REMOVE_SFM_POINTS = true;
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16, 32 doesn't seem to improve anything
 const float CONE_ANGLE_DEGREES = 10.0f;         // 5.f this has to change. I need more then 1 angle permutation
-const float DEPTH_STEP_SIZE = 0.00001f; // 0.0001          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
+const float DEPTH_STEP_SIZE = 0.0001f; // 0.0001          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
 const float BEST_CAMERA_ANGLE_DEGREES = 15.0f;  // dont know yet. in theory this should be 25-30
 
 // move helpers to another file
@@ -39,13 +39,13 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
-    std::string folderPath = "data\\skull\\";
+    std::string folderPath = "data\\grampa\\";
 
     std::vector<Camera> cameras;
 
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\skull\\skull.csv");
+        cameras = cameraLoader.loadFromCSV("data\\grampa\\grampa.csv");
     }
 
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
@@ -74,7 +74,7 @@ int main() {
         float avgDepth = 0.0f; // stat 38.11, 142.32
 
         CloudLoader cloudLoader; // make static !
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\skull\\skull.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\grampa\\grampa.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
 
         float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
 
