@@ -147,8 +147,7 @@ void evaluateZNCC(
 
     FrontierPoint parent = frontier[frontierIndex];
 
-    // Camera-axis Z depth of the center point for this depth hypothesis.
-    //const float depth = parent.depth * depthSteps[depthIndex];
+    // Camera-axis Z depth of the center point for this depth hypothesis.    
     const float depth = parent.depth + depthSteps[depthIndex];
 
     if (depth <= 0.0f)
@@ -252,14 +251,6 @@ void evaluateZNCC(
 
             const int winYIndex = winY + windowRadius;
 
-            // not using this anymore, result is now per window
-            //const int resultIdx =
-            //    frontierIndex * frontierStride
-            //   + depthIndex * depthStride
-            //   + normalIndex * normalStride
-            //   + winYIndex * yStride
-            //   + winXIndex * xStride;
-
 			float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
 
             float* refRow = (float*)((char*)refImg + py * refPitch);
@@ -293,9 +284,8 @@ void launchEvaluateZNCC(const float* refImg,
     int refHeight,
     int targetWidth,
     int targetHeight,
-    int frontierCount) { // <-- added frontierCount parameter
+    int frontierCount) {    
     
-    // Use frontierCount as number of blocks (one block per frontier point)
     evaluateZNCC <<<frontierCount, depthNSteps * normalNSteps>>> (
         refImg,
         targetImg,

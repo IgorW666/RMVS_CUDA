@@ -1,9 +1,16 @@
+
 #include "../include/zncc_processor.h"
 #include "../include/cuda_homography.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include <cmath> // for std::round
+#include <cmath> // for std::round, sqrtf
 #include <vector>
+#include <limits>
+#include <stdexcept>
+#include <algorithm>
+
+constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid
+constexpr float pointScoreThreshold = 0.5f; // threshold for point score to consider a frontier point valid
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
@@ -25,7 +32,26 @@ void ZNCCProcessor::setCameraMatrices(const float* H0, const float* K1inv, const
 }
 
 void ZNCCProcessor::setNormalPermutations(const NormalPermutation* normalPermutations, int count) {
+    // keep a host-side copy so we can reconstruct hypothesis normals after the kernel run
+    normalPermutationsHost.assign(normalPermutations, normalPermutations + count);
+
+    // copy to device constant memory for the kernel
     setupNormalPermutations(normalPermutations, count);
+}
+
+// host helpers (simple vector math used to reconstruct normals on host)
+static inline float3 host_normalize(const float3& v) {
+    float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len <= 1e-8f) return make_float3(0.0f, 0.0f, 1.0f);
+    return make_float3(v.x / len, v.y / len, v.z / len);
+}
+
+static inline float3 host_cross(const float3& a, const float3& b) {
+    return make_float3(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    );
 }
 
 std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
@@ -36,131 +62,143 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
     int normalNSteps) {
 
     const int frontierCount = static_cast<int>(frontierPoints.size());
-    
-    // add a helper for that in the future
-    FrontierPoint* frontierPtr = nullptr;
-    cudaMalloc((void**)&frontierPtr, frontierCount * sizeof(FrontierPoint)); // contiguous
-    cudaMemcpy(frontierPtr, frontierPoints.data(), frontierCount * sizeof(FrontierPoint), cudaMemcpyHostToDevice);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("GPU copy failed: ") + cudaGetErrorString(err));
+    if (frontierCount == 0 || depthSteps.empty() || normalNSteps <= 0) {
+        return {};
     }
 
-    // add a helper for that in the future
+    // Prepare device-side buffers and ensure cleanup on error/exit
+    FrontierPoint* frontierPtr = nullptr;
     float* depthStepsPtr = nullptr;
+    float* resultDev = nullptr;
+
     const int depthCount = static_cast<int>(depthSteps.size());
-    cudaMalloc((void**)&depthStepsPtr, depthCount * sizeof(float));
-    cudaMemcpy(depthStepsPtr, depthSteps.data(), depthCount * sizeof(float), cudaMemcpyHostToDevice);
-    
-    setImagePitches(refImage.pitch, targetImage.pitch);
+    const int resultFloatsPerFrontier = depthCount * normalNSteps;
+    const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;
 
-	// the results changed. Now we have a zncc score for depth/normal permutation for each frontier point
-	// So the result array will be of size (frontierCount * depthCount * normmalNSteps)    
-	const int resultFloatsPerFrontier = depthCount * normalNSteps;
-	const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;	
+    try {
+        // frontier array
+        if (cudaMalloc((void**)&frontierPtr, frontierCount * sizeof(FrontierPoint)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc frontierPtr failed");
+        if (cudaMemcpy(frontierPtr, frontierPoints.data(), frontierCount * sizeof(FrontierPoint), cudaMemcpyHostToDevice) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy frontierPtr failed");
 
-	float* result = nullptr;
-	cudaMalloc((void**)&result, resultFloatsTotal * sizeof(float)); // would be cool to initialize to -1.f
-    
-    // Call wrapper function with separate dimensions for ref and target images
-    launchEvaluateZNCC(
-        refImage.gpuData,
-        targetImage.gpuData,
-        frontierPtr,
-		depthStepsPtr,           
-        result,
-        depthCount,
-		normalNSteps,        // NormalPermutation array lives in __constant__ so I guess we need the number of steps here
-        refImage.width,
-        refImage.height,
-        targetImage.width,
-		targetImage.height,
-        frontierCount);
+        // depth steps array
+        if (cudaMalloc((void**)&depthStepsPtr, depthCount * sizeof(float)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc depthStepsPtr failed");
+        if (cudaMemcpy(depthStepsPtr, depthSteps.data(), depthCount * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy depthStepsPtr failed");
 
-    checkCudaError("computeZNCC kernel launch");
+        setImagePitches(refImage.pitch, targetImage.pitch);
 
-	//cv::Mat resultMat(targetImage.height, targetImage.width, CV_32F, cv::Scalar(0.f));
-    //cv::Mat resultMatx4(targetImage.height*4, targetImage.width*4, CV_32F, cv::Scalar(0.f));
+        // result buffer on device
+        if (cudaMalloc((void**)&resultDev, resultFloatsTotal * sizeof(float)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc resultDev failed");
 
-	// Copy result back to host (allocate host vector)
-	std::vector<float> resultHost;
-	std::vector<ResultPoint> validResults;
-	
-	resultHost.resize(resultFloatsTotal);
-	cudaMemcpy(resultHost.data(), result, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost);
-	err = cudaGetLastError();
-	if (err != cudaSuccess) {
-	    // cleanup before throwing
-	    cudaFree(frontierPtr);
-	    cudaFree(depthStepsPtr);
-	    cudaFree(result);
-	    throw std::runtime_error(std::string("cudaMemcpy DeviceToHost failed: ") + cudaGetErrorString(err));
-	}
+        // launch kernel: one block per frontier point, threads = depthCount * normalNSteps
+        launchEvaluateZNCC(
+            refImage.gpuData,
+            targetImage.gpuData,
+            frontierPtr,
+            depthStepsPtr,
+            resultDev,
+            depthCount,
+            normalNSteps,
+            refImage.width,
+            refImage.height,
+            targetImage.width,
+            targetImage.height,
+            frontierCount);
 
-    //int resultUVs = resultFloatsTotal / 2;
+        checkCudaError("computeZNCC kernel launch");
 
-	int validCount = 0;
+        // copy results back to host
+        std::vector<float> resultHost(resultFloatsTotal);
+        if (cudaMemcpy(resultHost.data(), resultDev, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy resultDev DeviceToHost failed");
 
-    /*for (int i = 0; i < resultUVs; ++i) {
-		float xf = resultHost[i * 2];
-		float yf = resultHost[i * 2 + 1];
+        // Repack results: for each frontier point pick the best (max) ZNCC across depth & normal hypotheses
+        std::vector<ResultPoint> packedResults;
+        packedResults.reserve(frontierCount);
 
-		float yfx4 = yf * 4.f;
-		float xfx4 = xf * 4.f;
+        for (int f = 0; f < frontierCount; ++f) {
+            float bestScore = -std::numeric_limits<float>::infinity();
+            int bestDepthIdx = 0;
+            int bestNormalIdx = 0;
 
-		// invalid marker from kernel is -1.f
-        if (xf < 0.f || yf < 0.f || xf >= static_cast<float>(targetImage.width) || yf >= static_cast<float>(targetImage.height)) {
-			// skip invalid coordinates
-            continue;
-		}
+            const int baseIdx = f * resultFloatsPerFrontier;
+            for (int d = 0; d < depthCount; ++d) {
+                const int depthBase = baseIdx + d * normalNSteps;
+                for (int n = 0; n < normalNSteps; ++n) {
+                    float score = resultHost[depthBase + n];
+                    // skip NaNs
+                    if (std::isnan(score)) continue;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestDepthIdx = d;
+                        bestNormalIdx = n;
+                    }
+                }
+            }
 
-		int x = static_cast<int>(std::round(xf));
-		int y = static_cast<int>(std::round(yf));
+            // If no valid score was found (all -inf/NaN), skip this frontier point
+            if (!std::isfinite(bestScore) || bestScore < znccThreshold) {
+                continue;
+            }
 
-        if (x < 0 || x >= targetImage.width || y < 0 || y >= targetImage.height) {
-            continue;
+            ResultPoint rp;
+            rp.x = frontierPoints[f].x;
+            rp.y = frontierPoints[f].y;
+            rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
+            rp.znccScore = bestScore;
+
+            // Reconstruct hypothesis normal on host using the same method as the device kernel
+            // If host-side normal permutations were not provided, fall back to parent normal.
+            if (bestNormalIdx >= 0 && bestNormalIdx < static_cast<int>(normalPermutationsHost.size())) {
+                NormalPermutation perm = normalPermutationsHost[bestNormalIdx];
+
+                float3 parentNormal = host_normalize(frontierPoints[f].normal);
+
+                float3 reference;
+                if (std::fabs(parentNormal.z) < 0.999f) {
+                    reference = make_float3(0.0f, 0.0f, 1.0f);
+                }
+                else {
+                    reference = make_float3(0.0f, 1.0f, 0.0f);
+                }
+
+                float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
+                float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
+
+                float3 hypothesis = make_float3(
+                    parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
+                    parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
+                    parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
+                );
+
+                rp.normal = host_normalize(hypothesis);
+            }
+            else {
+                // fallback
+                rp.normal = host_normalize(frontierPoints[f].normal);
+            }
+
+            packedResults.push_back(rp);
         }
 
-        const int pairsPerWindow = windowSize * windowSize;                  // W*W
-        const int pairsPerNormal = pairsPerWindow;                          // W*W
-        const int pairsPerDepth = normalNSteps * pairsPerNormal;            // N * W*W
-        const int pairsPerFrontier = depthCount * pairsPerDepth;            // D * N * W*W
+        // cleanup
+        cudaFree(frontierPtr);
+        cudaFree(depthStepsPtr);
+        cudaFree(resultDev);
 
-        const int frontierIdx = i / pairsPerFrontier;
-        const int withinFrontier = i % pairsPerFrontier;
+		std::cout << "computeZNCC: Frontier points processed: " << frontierCount << ", valid results: " << packedResults.size() << std::endl;
 
-        int depthHypothesisIdx = withinFrontier / pairsPerDepth;
-        int normalHypothesisIdx = (withinFrontier / pairsPerNormal) % normalNSteps;
-
-		//std::cout << "Valid coordinate : (" << xf << ", " << yf << ") at depth hypothesis index : " << depthHypothesisIdx << ", normal hypothesis index : " << normalHypothesisIdx << std::endl;
-
-		resultMat.at<float>(y, x) = 1.f;
-		resultMatx4.at<float>(static_cast<int>(std::round(yfx4)), static_cast<int>(std::round(xfx4))) = 1.f;
-		validCount++;
-	}*/
-
-	//std::cout << "There should be " << resultUVs << " valid coordinates\n";
-	//std::cout << "Total valid count: " << validCount << ", ~NWindows : " << validCount / (windowSize * windowSize) << std::endl;
-
-    // Upload resultMat to GPU and return as ImageData (znccOutput)
-    size_t bytes = static_cast<size_t>(targetImage.width) * static_cast<size_t>(targetImage.height) * sizeof(float);
-
-    // free previous gpuData if any << not using ImageData as output anymore
-    //if (znccOutput.gpuData) {
-    //    cudaFree(znccOutput.gpuData);
-    //    znccOutput.gpuData = nullptr;
-    //}
-
-    //cudaMalloc((void**)&znccOutput.gpuData, bytes);
-    //cudaMemcpy(znccOutput.gpuData, resultMat.ptr<float>(0), bytes, cudaMemcpyHostToDevice);
-    //znccOutput.width = targetImage.width;
-    //znccOutput.height = targetImage.height;
-    //znccOutput.pitch = 0; // not using pitched allocation here
-
-    // cleanup temporaries
-    cudaFree(frontierPtr);
-    cudaFree(depthStepsPtr);
-    cudaFree(result);
-
-    return validResults;
+        return packedResults;
+    }
+    catch (...) {
+        // Ensure resources are freed on any exception
+        if (frontierPtr) cudaFree(frontierPtr);
+        if (depthStepsPtr) cudaFree(depthStepsPtr);
+        if (resultDev) cudaFree(resultDev);
+        throw;
+    }
 }
