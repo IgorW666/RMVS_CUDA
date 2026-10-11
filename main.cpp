@@ -16,7 +16,7 @@
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
-const int DEPTH_STEPS = 32;                     // originally 16, 32 doesn't seem to improve anything
+const int DEPTH_STEPS = 16;                     // originally 16, 32 doesn't seem to improve anything
 const float CONE_ANGLE_DEGREES = 10.0f;         // 5.f this has to change. I need more then 1 angle permutation
 const float DEPTH_STEP_SIZE = 0.0001f;          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
 const float BEST_CAMERA_ANGLE_DEGREES = 15.0f;  // dont know yet. in theory this should be 25-30
@@ -28,6 +28,7 @@ void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, con
 std::vector<float> generateDepthSteps(float interval, int steps);
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras);
 std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
+std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
 
 int main() {
 
@@ -54,6 +55,13 @@ int main() {
     for (int refCamIdx = 0; refCamIdx < cameras.size(); ++refCamIdx) {
 
         std::pair<int, int> bestCameraPair = findBestCameraPair(refCamIdx, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+		auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+
+        std::cout << "Reference Camera: " << refCamIdx << ", Best Cameras:";
+        for (int camIdx : bestCameras) {
+            std::cout << " " << camIdx;
+        }
+        std::cout << std::endl;
 
         std::string refImgName = cameras[refCamIdx].name;
         std::string targetImgName = cameras[bestCameraPair.second].name;		
@@ -349,20 +357,6 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
     return depthSteps;
 }
 
-/*std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
-    std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
-    for (int i = 0; i < cameras.size(); ++i) {
-        for (int j = i + 1; j < cameras.size(); ++j) {
-            cv::Mat t1 = cameras[i].extrinsics.translation;
-            cv::Mat t2 = cameras[j].extrinsics.translation;
-			float angle = std::acos(t1.dot(t2) / (cv::norm(t1) * cv::norm(t2))) * 180.0f / CV_PI; // angle in degrees
-            cameraAngle[i][j] = angle;
-            cameraAngle[j][i] = angle; // symmetric
-        }
-    }
-    return cameraAngle;
-}*/
-
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
     // Compute angle between camera optical axes (baseline angle = angle between viewing directions).
     // For extrinsics given as X_cam = R * X_world + t, the camera center is C = -R.t() * t,
@@ -416,4 +410,25 @@ std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered
         }
     }
     return bestPair;
+}
+
+
+std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+    std::vector<int> bestCameras;
+    auto it = cameraAngle.find(refCamIdx);
+    if (it == cameraAngle.end() || it->second.empty()) {
+        return bestCameras; // empty
+    }
+    for (const auto& kv2 : it->second) {
+        int cam2 = kv2.first;
+        float angle = kv2.second;
+        float diff = std::abs(angle - bestCameraAngleDegrees);
+        if (diff < 5.0f) { // within 5 degrees of the target angle
+            bestCameras.push_back(cam2);
+            if (static_cast<int>(bestCameras.size()) >= NCams) {
+                break; // limit to NCams
+            }
+        }
+    }
+    return bestCameras;
 }

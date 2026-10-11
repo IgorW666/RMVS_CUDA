@@ -30,3 +30,11 @@ struct HomographyParams {
     std::array<float, 9> K1inv;  // K1^-1
     std::array<float, 3> e2;     // K2 * t
 };
+
+// logic not yet implemented
+struct FolderData {
+    std::string inputFolder;
+    std::string csvFile;    
+    std::string sparseCloudFile;
+	std::vector<std::string> imageFiles;
+};

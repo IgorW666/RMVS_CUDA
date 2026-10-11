@@ -38,6 +38,7 @@ bool projectSample(float3 referencePoint, float depth, float3 normal, float2& xy
     xy = make_float2(p.x / p.z, p.y / p.z);
     return true;
 }
+
 // Catmull-Rom bicubic weights
 __device__
 inline void getBicubicWeights(float t, float* w) {
@@ -59,6 +60,7 @@ inline float sampleClamp(const float* image, int width, int height, int x, int y
     return row[x];
 }
 
+// i should really start paying Wikipedia some tribute
 __device__
 float interpolateTarget(const float* targetImg, int width, int height, float2 uv, size_t pitch) {
     int ix = (int)floorf(uv.x);
@@ -101,7 +103,6 @@ void accumulateZNCC(float& sum_ref, float& sum_target,
     sum_product += ref_val * target_val;
 }
 
-// Zero-mean normalized cross-correlation
 __device__
 float finishZNCC(float sum_ref, float sum_target, float sum_sq_ref,
     float sum_sq_target, float sum_product, int count) {
