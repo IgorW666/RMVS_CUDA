@@ -82,12 +82,17 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\camera_loader.h" />
+    <ClInclude Include="include\cloud_loader.h" />
     <ClInclude Include="include\cuda_homography.h" />
+    <ClInclude Include="include\helper_math.h" />
     <ClInclude Include="include\image_handler.h" />
+    <ClInclude Include="include\normal_permutation_generator.h" />
+    <ClInclude Include="include\types.h" />
     <ClInclude Include="include\zncc_processor.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\camera_loader.cpp" />
+    <ClCompile Include="src\cloud_loader.cpp" />
     <ClCompile Include="src\image_handler.cpp" />
     <ClCompile Include="src\zncc_processor.cpp" />
   </ItemGroup>

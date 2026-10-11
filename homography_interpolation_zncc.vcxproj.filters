@@ -27,6 +27,18 @@
     <ClInclude Include="include\camera_loader.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\normal_permutation_generator.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\types.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\helper_math.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\cloud_loader.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\image_handler.cpp">
@@ -36,6 +48,9 @@
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\camera_loader.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\cloud_loader.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>

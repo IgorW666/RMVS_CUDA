@@ -1,19 +1,17 @@
 #include "../include/cuda_homography.h"
 #include <stdio.h>
+#include "../include/helper_math.h"
 
-// ============================================================================
-// Constant Memory Symbols
-// ============================================================================
-__constant__ float H0[9];     // K2 * R * K1^-1
-__constant__ float K1inv[9];  // K1^-1
-__constant__ float e2[3];     // K2 * t
+
+// calculate the total size of constant memory used sometime
+__constant__ float H0[9];                         // K2 * R * K1^-1
+__constant__ float K1inv[9];                      // K1^-1
+__constant__ float e2[3];                         // K2 * t
 __constant__ int windowRadius;
+__constant__ NormalPermutation normalPermutations[16];
+__constant__ size_t refPitch;
+__constant__ size_t targetPitch;
 
-// ============================================================================
-// Device Helper Functions (Device-only)
-// ============================================================================
-
-// Helper function to multiply 3x3 matrix by 3D point (row-major storage)
 __device__
 inline float3 matmul3x3_point(const float* mat, float3 p) {
     return make_float3(
@@ -21,6 +19,24 @@ inline float3 matmul3x3_point(const float* mat, float3 p) {
         mat[3] * p.x + mat[4] * p.y + mat[5] * p.z,
         mat[6] * p.x + mat[7] * p.y + mat[8] * p.z
     );
+}
+
+
+// standard homography transformed for precalculated H0, K1inv, e
+__device__
+bool projectSample(float3 referencePoint, float depth, float3 normal, float2& xy) {
+    float3 q = matmul3x3_point(K1inv, referencePoint);
+    float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / depth;
+    float3 h = matmul3x3_point(H0, referencePoint);
+    float3 p = make_float3(
+        h.x + e2[0] * s,
+        h.y + e2[1] * s,
+        h.z + e2[2] * s
+    );
+    if (p.z <= 1e-6f)
+        return false;
+    xy = make_float2(p.x / p.z, p.y / p.z);
+    return true;
 }
 
 // Catmull-Rom bicubic weights
@@ -44,25 +60,9 @@ inline float sampleClamp(const float* image, int width, int height, int x, int y
     return row[x];
 }
 
-// Project a reference pixel to the target image using the plane-induced homography:
-// p' = H0 * p + (K2 * t) * (n^T * K1^-1 * p) / d
-// Returns false if the point is behind the target camera.
+// i should really start paying Wikipedia some tribute
 __device__
-bool projectSample(float3 referencePoint, float depth, float3 normal, float2& uv) {
-    float3 q = matmul3x3_point(K1inv, referencePoint);
-    float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / depth;
-    float3 h = matmul3x3_point(H0, referencePoint);
-
-    float3 p = make_float3(h.x + e2[0] * s, h.y + e2[1] * s, h.z + e2[2] * s);
-    if (p.z <= 1e-6f) return false;
-
-    uv = make_float2(p.x / p.z, p.y / p.z);
-    return true;
-}
-
-// Bicubic interpolation in target image (pixel centers at integer coordinates)
-__device__
-float interpolateTarget(float* targetImage, int width, int height, float2 uv, size_t pitch) {
+float interpolateTarget(const float* targetImg, int width, int height, float2 uv, size_t pitch) {
     int ix = (int)floorf(uv.x);
     int iy = (int)floorf(uv.y);
 
@@ -83,7 +83,7 @@ float interpolateTarget(float* targetImage, int width, int height, float2 uv, si
 #pragma unroll
         for (int i = 0; i < 4; ++i) {
             int cx = ix + i - 1;
-            rowValue += wx[i] * sampleClamp(targetImage, width, height, cx, cy, pitch);
+            rowValue += wx[i] * sampleClamp(targetImg, width, height, cx, cy, pitch);
         }
 
         value += wy[j] * rowValue;
@@ -92,7 +92,6 @@ float interpolateTarget(float* targetImage, int width, int height, float2 uv, si
     return value;
 }
 
-// Accumulate sums, squares and cross-product
 __device__
 void accumulateZNCC(float& sum_ref, float& sum_target,
     float& sum_sq_ref, float& sum_sq_target,
@@ -104,7 +103,6 @@ void accumulateZNCC(float& sum_ref, float& sum_target,
     sum_product += ref_val * target_val;
 }
 
-// Zero-mean normalized cross-correlation
 __device__
 float finishZNCC(float sum_ref, float sum_target, float sum_sq_ref,
     float sum_sq_target, float sum_product, int count) {
@@ -124,105 +122,214 @@ float finishZNCC(float sum_ref, float sum_target, float sum_sq_ref,
     return cov / denom;
 }
 
-// ============================================================================
-// CUDA Kernel
-// ============================================================================
-
 __global__
-void evaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* normalMap,
-    int refWidth, int refHeight, int targetWidth, int targetHeight, float* znccMat,
-    size_t refPitch, size_t targetPitch, size_t depthPitch, size_t normalPitch, size_t outPitch)
+void evaluateZNCC(
+    const float* refImg,
+    const float* targetImg,
+    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+    float* result,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int targetWidth,
+    int targetHeight)
 {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int frontierIndex = blockIdx.x;
+    const int hypothesis = threadIdx.x;
+    const int depthIndex = hypothesis / normalNSteps;
+    const int normalIndex = hypothesis % normalNSteps;
 
-    if (x >= refWidth || y >= refHeight) return;
+    // Required: the launch must provide at least
+    // depthNSteps * normalNSteps threads per block.
+    if (depthIndex >= depthNSteps)
+        return;
 
-	// Debugging output for the center pixel (optional)
-    /*if (x == refWidth / 2 && y == refHeight / 2) {
-        float* dRow = (float*)((char*)depthMap + y * depthPitch);
-        float* nRow = (float*)((char*)normalMap + y * normalPitch);
-        float3 rp = make_float3((float)x, (float)y, 1.0f);
-        float3 q = matmul3x3_point(K1inv, rp);
-        float3 h = matmul3x3_point(H0, rp);
-        float2 uvDbg = make_float2(0.0f, 0.0f);
-        bool ok = projectSample(rp, dRow[x], make_float3(nRow[x * 3], nRow[x * 3 + 1], nRow[x * 3 + 2]), uvDbg);
+    FrontierPoint parent = frontier[frontierIndex];
 
-        printf("depth=%f n=(%f,%f,%f)\n", dRow[x], nRow[x * 3], nRow[x * 3 + 1], nRow[x * 3 + 2]);
-        printf("H0*p=(%f,%f,%f) e2=(%f,%f,%f) K1inv*p=(%f,%f,%f)\n",
-            h.x, h.y, h.z, e2[0], e2[1], e2[2], q.x, q.y, q.z);
-        printf("ok=%d uv=(%f,%f) target=%dx%d\n", (int)ok, uvDbg.x, uvDbg.y, targetWidth, targetHeight);
-    }*/
+    // Camera-axis Z depth of the center point for this depth hypothesis.    
+    const float depth = parent.depth + depthSteps[depthIndex];
 
-    float* depthRow = (float*)((char*)depthMap + y * depthPitch);
-    float depth = depthRow[x];
+    if (depth <= 0.0f)
+        return;
 
-    float* normalRow = (float*)((char*)normalMap + y * normalPitch);
-    float3 normal = make_float3(normalRow[x * 3], normalRow[x * 3 + 1], normalRow[x * 3 + 2]);
+    const int refX = parent.x;
+    const int refY = parent.y;
 
+    NormalPermutation perm = normalPermutations[normalIndex];
+
+    float3 parentNormal = normalize(parent.normal);
+
+    float3 parentTangent;
+    float3 parentBitangent;
+    float3 reference;
+
+    if (fabsf(parentNormal.z) < 0.999f) {
+        reference = make_float3(0.0f, 0.0f, 1.0f);
+    }
+    else {
+        reference = make_float3(0.0f, 1.0f, 0.0f);
+    }
+
+    // Build an orthonormal tangent frame around the parent normal.
+    parentTangent = normalize(cross(reference, parentNormal));
+    parentBitangent = normalize(cross(parentNormal, parentTangent));
+
+    float3 normVec = normalize(
+        parentNormal
+        + perm.tangent * parentTangent
+        + perm.bitangent * parentBitangent
+    );
+
+    // ------------------------------------------------------------
+    // Reconstruct the fixed 3D pivot point at the center of the
+    // reference window.
+    //
+    // Assumption: depth is camera-axis Z depth in camera 1 space.
+    // K1inv maps pixels to rays in camera 1 coordinates.
+    // ------------------------------------------------------------
+
+    float3 centerPixel = make_float3(
+        static_cast<float>(refX),
+        static_cast<float>(refY),
+        1.0f
+    );
+
+    float3 centerRay = matmul3x3_point(K1inv, centerPixel);
+
+    // A conventional pinhole camera produces centerRay.z ~= 1.
+    // Divide by ray.z to support a general invertible K matrix.
+    if (fabsf(centerRay.z) < 1e-8f)
+        return;
+
+    float rayScale = depth / centerRay.z;
+
+    float3 pivotPoint = make_float3(
+        centerRay.x * rayScale,
+        centerRay.y * rayScale,
+        centerRay.z * rayScale
+    );
+
+    const float planeOffset =
+        normVec.x * pivotPoint.x
+        + normVec.y * pivotPoint.y
+        + normVec.z * pivotPoint.z;
+
+    if (fabsf(planeOffset) < 1e-8f)
+        return;
+
+    const int windowSize = 1 + 2 * windowRadius;
+    const int xStride = 2;
+    const int yStride = windowSize * xStride;
+    const int normalStride = windowSize * yStride;
+    const int depthStride = normalNSteps * normalStride;
+    const int frontierStride = depthNSteps * depthStride;
+    
     float sum_ref = 0.0f;
     float sum_target = 0.0f;
     float sum_sq_ref = 0.0f;
     float sum_sq_target = 0.0f;
     float sum_product = 0.0f;
-    int count = 0;
 
-    for (int oy = -windowRadius; oy <= windowRadius; ++oy) {
-        for (int ox = -windowRadius; ox <= windowRadius; ++ox) {
-            int py = y + oy;
-            int px = x + ox;
+    for (int winY = -windowRadius; winY <= windowRadius; ++winY)        
+    {
+		const int py = refY + winY;
+        const float refPtYf = static_cast<float>(py);
 
-            if (px < 0 || px >= refWidth || py < 0 || py >= refHeight) continue;
+        for (int winX = -windowRadius; winX <= windowRadius; ++winX)
+        {
+			const int px = refX + winX;
+            const float refPtXf = static_cast<float>(px);
 
-            float3 refPoint = make_float3((float)px, (float)py, 1.0f);
-            float2 uv;
-            if (!projectSample(refPoint, depth, normal, uv)) continue;
-            if (uv.x < 0.0f || uv.x >(float)(targetWidth - 1) ||
-                uv.y < 0.0f || uv.y >(float)(targetHeight - 1)) continue;
+            float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
 
-            float* refRow = (float*)((char*)refImage + py * refPitch);
+            float2 xy;
+
+            bool valid = projectSample(refPt, planeOffset, normVec, xy);
+
+            const int winXIndex = winX + windowRadius;
+
+            const int winYIndex = winY + windowRadius;
+
+			float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
+
+            float* refRow = (float*)((char*)refImg + py * refPitch);
             float ref_val = refRow[px];
-            float target_val = interpolateTarget(targetImage, targetWidth, targetHeight, uv, targetPitch);
+			
+            float target_val = interpolateTarget(targetImg, targetWidth, targetHeight, uv, targetPitch);
 
             accumulateZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, ref_val, target_val);
-            ++count;
         }
     }
 
-    float* outRow = (float*)((char*)znccMat + y * outPitch);
-    outRow[x] = finishZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, count);
+    float zncc = finishZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, windowSize * windowSize);
+
+    int resultIdx =
+        frontierIndex * (depthNSteps * normalNSteps)
+        + depthIndex * normalNSteps
+        + normalIndex;
+
+    result[resultIdx] = zncc;
 }
 
-// ============================================================================
-// Kernel Launch Wrapper (callable from .cpp files)
-// ============================================================================
 
-void launchEvaluateZNCC(float* refImage, float* targetImage, float* depthMap, float* normalMap,
-    int refWidth, int refHeight, int targetWidth, int targetHeight, float* znccMat,
-    size_t refPitch, size_t targetPitch, size_t depthPitch, size_t normalPitch,
-    unsigned int blockX, unsigned int blockY, unsigned int gridX, unsigned int gridY,
-    size_t outPitch) {
-    dim3 blockDim(blockX, blockY);
-    dim3 gridDim(gridX, gridY);
-    evaluateZNCC << <gridDim, blockDim >> > (refImage, targetImage, depthMap, normalMap,
-        refWidth, refHeight, targetWidth, targetHeight, znccMat,
-        refPitch, targetPitch, depthPitch, normalPitch, outPitch);
+void launchEvaluateZNCC(const float* refImg,
+    const float* targetImg,
+    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+    float* result,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int targetWidth,
+    int targetHeight,
+    int frontierCount) {    
+    
+    evaluateZNCC <<<frontierCount, depthNSteps * normalNSteps>>> (
+        refImg,
+        targetImg,
+        frontier,
+        depthSteps,
+        result,
+        depthNSteps,
+        normalNSteps,
+        refWidth,
+        refHeight,
+        targetWidth,
+        targetHeight);
 }
-
-// ============================================================================
-// Host-side Setup Functions
-// ============================================================================
 
 void setupCameraMatrices(const float* h0_host, const float* k1inv_host, const float* e2_host) {
     cudaMemcpyToSymbol(H0, h0_host, 9 * sizeof(float));
     cudaMemcpyToSymbol(K1inv, k1inv_host, 9 * sizeof(float));
     cudaMemcpyToSymbol(e2, e2_host, 3 * sizeof(float));
-    checkCudaError("setupCameraMatrices");
+    checkCudaError("setupCameraMatrices"); // handy!
+}
+
+void setupNormalPermutations(const NormalPermutation* normalPermutations_host, int count) {
+    // safety: ensure we don't overrun device constant array
+    const int maxPerms = static_cast<int>(sizeof(normalPermutations) / sizeof(normalPermutations[0]));
+    if (count > maxPerms) {
+        fprintf(stderr, "setupNormalPermutations: count (%d) exceeds device capacity (%d). Truncating to %d.\n", count, maxPerms, maxPerms);
+        count = maxPerms;
+    }
+    // copy proper bytes based on the struct size
+    cudaMemcpyToSymbol(normalPermutations, normalPermutations_host, count * sizeof(NormalPermutation));
+    checkCudaError("setupNormalPermutations");
 }
 
 void setWindowRadius(int radius) {
     cudaMemcpyToSymbol(windowRadius, &radius, sizeof(int));
     checkCudaError("setWindowRadius");
+}
+
+// host helper to set image pitches in device constant memory
+void setImagePitches(size_t refPitch_host, size_t targetPitch_host) {
+    cudaMemcpyToSymbol(refPitch, &refPitch_host, sizeof(size_t));
+    cudaMemcpyToSymbol(targetPitch, &targetPitch_host, sizeof(size_t));
+    checkCudaError("setImagePitches");
 }
 
 void checkCudaError(const char* message) {
