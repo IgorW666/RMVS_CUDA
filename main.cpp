@@ -17,7 +17,7 @@ const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16, 32 doesn't seem to improve anything
-const float CONE_ANGLE_DEGREES = 10.0f;         // 5.f this has to change. I need more then 1 angle permutation
+const float CONE_ANGLE_DEGREES = 5.0f;         // 5.f this has to change. I need more then 1 angle permutation
 const float DEPTH_STEP_SIZE = 0.0001f; // 0.0001          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
 const float BEST_CAMERA_ANGLE_DEGREES = 15.0f;  // dont know yet. in theory this should be 25-30
 
