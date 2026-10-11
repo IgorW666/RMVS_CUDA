@@ -73,9 +73,9 @@ public:
     /**
      * Execute ZNCC computation for two target images in a single kernel pass.
      *
-     * Returns a pair of result vectors: first = results for target0, second = results for target1.
+     * Returns a vector of consensus results where both targets agree on depth & normal hypothesis.
      */
-    std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> computeZNCCDualTargets(
+    std::vector<ResultPoint> computeZNCCDualTargets(
         const ImageData& refImage,
         const ImageData& targetImage0,
         const ImageData& targetImage1,

@@ -216,8 +216,7 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
 }
 
 
-/// New: compute ZNCC for two target images in a single kernel pass
-std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> ZNCCProcessor::computeZNCCDualTargets(
+std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
     const ImageData& refImage,
     const ImageData& targetImage0,
     const ImageData& targetImage1,
@@ -290,141 +289,155 @@ std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> ZNCCProcessor::com
         if (cudaMemcpy(resultHost1.data(), resultDev1, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
             throw std::runtime_error("cudaMemcpy resultDev1 DeviceToHost failed");
 
-        // Repack results for both targets independently
-        std::vector<ResultPoint> packedResults0;
-        std::vector<ResultPoint> packedResults1;
-        packedResults0.reserve(frontierCount);
-        packedResults1.reserve(frontierCount);
+        // Repack results requiring mutual agreement between target0 and target1.
+        // Agreement criteria:
+        //  - both targets select finite scores >= znccThreshold
+        //  - both targets choose the same depth index AND the same normal index
+        std::vector<ResultPoint> consensusResults;
+        consensusResults.reserve(frontierCount);
+
+        auto reconstruct_normal = [&](int fIdx, int normalIdx) -> float3 {
+            if (normalIdx >= 0 && normalIdx < static_cast<int>(normalPermutationsHost.size())) {
+                NormalPermutation perm = normalPermutationsHost[normalIdx];
+
+                float3 parentNormal = host_normalize(frontierPoints[fIdx].normal);
+
+                float3 reference;
+                if (std::fabs(parentNormal.z) < 0.999f) {
+                    reference = make_float3(0.0f, 0.0f, 1.0f);
+                }
+                else {
+                    reference = make_float3(0.0f, 1.0f, 0.0f);
+                }
+
+                float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
+                float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
+
+                float3 hypothesis = make_float3(
+                    parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
+                    parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
+                    parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
+                );
+
+                return host_normalize(hypothesis);
+            }
+            else {
+                return host_normalize(frontierPoints[fIdx].normal);
+            }
+            };
+
 
         for (int f = 0; f < frontierCount; ++f) {
-            // target 0
-            {
-                float bestScore = -std::numeric_limits<float>::infinity();
-                int bestDepthIdx = 0;
-                int bestNormalIdx = 0;
+            float bestJointScore = -std::numeric_limits<float>::infinity();
+            int bestDepthIdx = 0;
+            int bestNormalIdx = 0;
 
-                const int baseIdx = f * resultFloatsPerFrontier;
-                for (int d = 0; d < depthCount; ++d) {
-                    const int depthBase = baseIdx + d * normalNSteps;
-                    for (int n = 0; n < normalNSteps; ++n) {
-                        float score = resultHost0[depthBase + n];
-                        if (std::isnan(score)) continue;
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestDepthIdx = d;
-                            bestNormalIdx = n;
-                        }
-                    }
-                }
+            const int baseIdx = f * resultFloatsPerFrontier;
 
-                if (induceDepthDevPenalty) {
-                    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
-                    bestScore = bestScore * depthDeviationPenalty;
-                }
+            for (int d = 0; d < depthCount; ++d) {
+                const int depthBase = baseIdx + d * normalNSteps;
 
-                if (std::isfinite(bestScore) && bestScore >= znccThreshold) {
-                    ResultPoint rp;
-                    rp.x = frontierPoints[f].x;
-                    rp.y = frontierPoints[f].y;
-                    rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
-                    rp.znccScore = bestScore;
+                for (int n = 0; n < normalNSteps; ++n) {
+                    const float s0 = resultHost0[depthBase + n];
+                    const float s1 = resultHost1[depthBase + n];
 
-                    if (bestNormalIdx >= 0 && bestNormalIdx < static_cast<int>(normalPermutationsHost.size())) {
-                        NormalPermutation perm = normalPermutationsHost[bestNormalIdx];
+                    // A joint hypothesis requires valid support from both targets.
+                    if (!std::isfinite(s0) || !std::isfinite(s1))
+                        continue;
 
-                        float3 parentNormal = host_normalize(frontierPoints[f].normal);
+                    float jointScore = 0.5f * (s0 + s1);
 
-                        float3 reference;
-                        if (std::fabs(parentNormal.z) < 0.999f) {
-                            reference = make_float3(0.0f, 0.0f, 1.0f);
-                        }
-                        else {
-                            reference = make_float3(0.0f, 1.0f, 0.0f);
-                        }
+                    // Apply depth deviation penalty to the hypothesis itself.
+                    if (induceDepthDevPenalty) {
+                        const float penalty =
+                            1.f - depthDevPenaltyStrength *
+                            std::abs(depthSteps[d]);
 
-                        float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
-                        float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
-
-                        float3 hypothesis = make_float3(
-                            parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
-                            parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
-                            parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
-                        );
-
-                        rp.normal = host_normalize(hypothesis);
-                    }
-                    else {
-                        rp.normal = host_normalize(frontierPoints[f].normal);
+                        jointScore *= penalty;
                     }
 
-                    packedResults0.push_back(rp);
+                    if (jointScore > bestJointScore) {
+                        bestJointScore = jointScore;
+                        bestDepthIdx = d;
+                        bestNormalIdx = n;
+                    }
                 }
             }
 
-            // target 1
-            {
-                float bestScore = -std::numeric_limits<float>::infinity();
-                int bestDepthIdx = 0;
-                int bestNormalIdx = 0;
+            if (!std::isfinite(bestJointScore))
+                continue;
 
-                const int baseIdx = f * resultFloatsPerFrontier;
-                for (int d = 0; d < depthCount; ++d) {
-                    const int depthBase = baseIdx + d * normalNSteps;
-                    for (int n = 0; n < normalNSteps; ++n) {
-                        float score = resultHost1[depthBase + n];
-                        if (std::isnan(score)) continue;
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestDepthIdx = d;
-                            bestNormalIdx = n;
-                        }
-                    }
-                }
+            if (bestJointScore < znccThreshold)
+                continue;
 
-                if (induceDepthDevPenalty) {
-                    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
-                    bestScore = bestScore * depthDeviationPenalty;
-                }
+            ResultPoint rp;
+            rp.x = frontierPoints[f].x;
+            rp.y = frontierPoints[f].y;
+            rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
+            rp.znccScore = bestJointScore;
+            rp.normal = reconstruct_normal(f, bestNormalIdx);
 
-                if (std::isfinite(bestScore) && bestScore >= znccThreshold) {
-                    ResultPoint rp;
-                    rp.x = frontierPoints[f].x;
-                    rp.y = frontierPoints[f].y;
-                    rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
-                    rp.znccScore = bestScore;
-
-                    if (bestNormalIdx >= 0 && bestNormalIdx < static_cast<int>(normalPermutationsHost.size())) {
-                        NormalPermutation perm = normalPermutationsHost[bestNormalIdx];
-
-                        float3 parentNormal = host_normalize(frontierPoints[f].normal);
-
-                        float3 reference;
-                        if (std::fabs(parentNormal.z) < 0.999f) {
-                            reference = make_float3(0.0f, 0.0f, 1.0f);
-                        }
-                        else {
-                            reference = make_float3(0.0f, 1.0f, 0.0f);
-                        }
-
-                        float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
-                        float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
-
-                        float3 hypothesis = make_float3(
-                            parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
-                            parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
-                            parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
-                        );
-
-                        rp.normal = host_normalize(hypothesis);
-                    }
-                    else {
-                        rp.normal = host_normalize(frontierPoints[f].normal);
-                    }
-
-                    packedResults1.push_back(rp);
-                }
-            }
+            consensusResults.push_back(rp);
         }
+
+
+        /*for (int f = 0; f < frontierCount; ++f) {
+            // find best hypothesis for target 0
+            float bestScore0 = -std::numeric_limits<float>::infinity();
+            int bestDepthIdx0 = 0;
+            int bestNormalIdx0 = 0;
+
+            // find best hypothesis for target 1
+            float bestScore1 = -std::numeric_limits<float>::infinity();
+            int bestDepthIdx1 = 0;
+            int bestNormalIdx1 = 0;
+
+            const int baseIdx = f * resultFloatsPerFrontier;
+            for (int d = 0; d < depthCount; ++d) {
+                const int depthBase = baseIdx + d * normalNSteps;
+                for (int n = 0; n < normalNSteps; ++n) {
+                    float s0 = resultHost0[depthBase + n];
+                    if (!std::isnan(s0) && s0 > bestScore0) {
+                        bestScore0 = s0;
+                        bestDepthIdx0 = d;
+                        bestNormalIdx0 = n;
+                    }
+
+                    float s1 = resultHost1[depthBase + n];
+                    if (!std::isnan(s1) && s1 > bestScore1) {
+                        bestScore1 = s1;
+                        bestDepthIdx1 = d;
+                        bestNormalIdx1 = n;
+                    }
+                }
+            }
+
+            // apply optional depth deviation penalty independently
+            if (induceDepthDevPenalty) {
+                const float depthDeviationPenalty0 = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx0]);
+                bestScore0 = bestScore0 * depthDeviationPenalty0;
+
+                const float depthDeviationPenalty1 = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx1]);
+                bestScore1 = bestScore1 * depthDeviationPenalty1;
+            }
+
+            // require both scores to be finite and above threshold
+            if (!std::isfinite(bestScore0) || !std::isfinite(bestScore1)) continue;
+            if (bestScore0 < znccThreshold || bestScore1 < znccThreshold) continue;
+
+            // require exact agreement on depth index and normal index (mutual consistency)
+            if (bestDepthIdx0 == bestDepthIdx1 && bestNormalIdx0 == bestNormalIdx1) {
+                ResultPoint rp;
+                rp.x = frontierPoints[f].x;
+                rp.y = frontierPoints[f].y;
+                rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx0];
+                rp.znccScore = 0.5f * (bestScore0 + bestScore1);
+                rp.normal = reconstruct_normal(f, bestNormalIdx0);
+
+                consensusResults.push_back(rp);
+            }
+            // else: disagreement => ignore (no consensus)
+        }*/
 
         // cleanup
         cudaFree(frontierPtr);
@@ -432,7 +445,7 @@ std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> ZNCCProcessor::com
         cudaFree(resultDev0);
         cudaFree(resultDev1);
 
-        return std::make_pair(std::move(packedResults0), std::move(packedResults1));
+        return consensusResults;
     }
     catch (...) {
         if (frontierPtr) cudaFree(frontierPtr);

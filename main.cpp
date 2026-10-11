@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio> // for snprintf
 #include <unordered_map>
+#include <unordered_set>
 
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that off
@@ -19,7 +20,7 @@ const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds c
 const int DEPTH_STEPS = 16;                     // originally 16. Can be increased but not sure if it changes anything yet
 const int NORMAL_PERMUTATIONS = 16;             // 
 const float CONE_ANGLE_DEGREES = 4.0f;          // 5.f this has to change. I need more then 1 angle permutation
-const float DEPTH_STEP_SIZE = 0.001f;           // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const float DEPTH_STEP_SIZE = 0.005f;           // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 25.0f;  // dont know yet. in theory this should be 25-30deg
 
 // move helpers to another file
@@ -40,11 +41,11 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
-    std::string folderPath = "data\\grampa\\";
+    std::string folderPath = "data\\budda2\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\grampa\\grampa.csv");
+        cameras = cameraLoader.loadFromCSV("data\\budda2\\budda.csv");
     }
 
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
@@ -53,8 +54,8 @@ int main() {
     for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
 
         // Find best cameras by baseline angle
-        auto bestCameras = findBestCamerasByAngle(refCamIdx, static_cast<int>(cameras.size()), cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
-        auto bestCameraPair = findBestCameraPair(refCamIdx, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+        auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+        //auto bestCameraPair = findBestCameraPair(refCamIdx, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
 
         std::cout << "Reference Camera: " << refCamIdx << ", Best Cameras:";
         for (int camIdx : bestCameras) {
@@ -69,15 +70,19 @@ int main() {
             targetIdx0 = bestCameras[0];
             targetIdx1 = bestCameras[1];
         }
-        else if (bestCameras.size() == 1) {
-            targetIdx0 = bestCameras[0];
-            targetIdx1 = bestCameraPair.second >= 0 ? bestCameraPair.second : bestCameras[0];
-        }
         else {
-            // fallback: use bestCameraPair.second twice (keeps backwards compatibility)
-            targetIdx0 = bestCameraPair.second;
-            targetIdx1 = bestCameraPair.second;
+			//throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx));
+			continue; // this has to be fixed, findBestCamerasByAngle is not working properly, it should find 2 cameras that are closest to the given angle
         }
+        //else if (bestCameras.size() == 1) {
+        //   targetIdx0 = bestCameras[0];
+        //    targetIdx1 = bestCameraPair.second >= 0 ? bestCameraPair.second : bestCameras[0];
+        //}
+        //else {
+        //    // fallback: use bestCameraPair.second twice (keeps backwards compatibility)
+        //    targetIdx0 = bestCameraPair.second;
+        //    targetIdx1 = bestCameraPair.second;
+        //}
 
         // If either target index is invalid, skip this reference camera
         if (targetIdx0 < 0 || targetIdx0 >= static_cast<int>(cameras.size()) ||
@@ -98,22 +103,23 @@ int main() {
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
         // Use the same source camera as before for initial depth projection
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\grampa\\grampa.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[refCamIdx], refImage, avgDepth);
 
         //float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
 		float calculatedDepthStepSize = DEPTH_STEP_SIZE;
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
-        const double progressImageScale = 0.125;
+        const double progressImageScale = 900.f / float(std::max(IMG_WIDTH, IMG_HEIGHT));
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
         std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
 
         // Prepare homographies for both targets and upload to device constants
-        HomographyParams hp0 = calcHomographyParams2(cameras[bestCameraPair.first], cameras[targetIdx0]);
-        HomographyParams hp1 = calcHomographyParams2(cameras[bestCameraPair.first], cameras[targetIdx1]);
+        HomographyParams hp0 = calcHomographyParams2(cameras[refCamIdx], cameras[targetIdx0]);
+        HomographyParams hp1 = calcHomographyParams2(cameras[refCamIdx], cameras[targetIdx1]);
+
         processor.setCameraMatrices(hp0.H0.data(), hp0.K1inv.data(), hp0.e2.data());
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
 
@@ -125,7 +131,7 @@ int main() {
         cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
-        frontierPoints.reserve(1024);
+        frontierPoints.reserve(1024);              // calculate from last frontier size
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
                 float d = depthMap.at<float>(y, x);
@@ -153,16 +159,14 @@ int main() {
                 depthMap.setTo(0.f);
             }
 
-            // Run dual-target ZNCC kernel and keep first target results for existing flow
-            auto resultsPair = processor.computeZNCCDualTargets(
+            // Run dual-target ZNCC kernel returning consensus results agreed by both targets
+            std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
                 refImage,
                 targetImage0,
                 targetImage1,
                 frontierPoints,
                 depthSteps,
                 static_cast<int>(normalPermutations.size()));
-
-            std::vector<ResultPoint> results = std::move(resultsPair.first);
 
             if (results.empty()) {
                 std::cout << "No valid results returned by computeZNCC. Stopping.\n";
@@ -214,7 +218,7 @@ int main() {
         depthMapInit = depthMap;
 
         std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
-        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[bestCameraPair.first]);
+        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[refCamIdx]);
 
         if (SAVE_DEBUG_DATA) {
             saveNormalMapPng("result_normal_map.png", normalMap, depthMapInit);
@@ -440,7 +444,7 @@ std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered
 }
 
 
-std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+/*std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     std::vector<int> bestCameras;
     auto it = cameraAngle.find(refCamIdx);
     if (it == cameraAngle.end() || it->second.empty()) {
@@ -457,5 +461,78 @@ std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, co
             }
         }
     }
+    return bestCameras;
+}*/
+
+std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+    std::vector<std::pair<float, int>> candidates;
+
+    // Primary source: angles available under refCamIdx
+    auto it = cameraAngle.find(refCamIdx);
+    if (it != cameraAngle.end() && !it->second.empty()) {
+        for (const auto& kv : it->second) {
+            int cam2 = kv.first;
+            if (cam2 == refCamIdx) continue;
+            float angle = kv.second;
+            float diff = std::abs(angle - bestCameraAngleDegrees);
+            candidates.emplace_back(diff, cam2);
+        }
+    }
+    else {
+        // Fallback: search other maps for an entry referencing refCamIdx
+        for (const auto& kv : cameraAngle) {
+            int camA = kv.first;
+            if (camA == refCamIdx) continue;
+            auto it2 = kv.second.find(refCamIdx);
+            if (it2 != kv.second.end()) {
+                float diff = std::abs(it2->second - bestCameraAngleDegrees);
+                candidates.emplace_back(diff, camA);
+            }
+        }
+    }
+
+    // If no angle data found at all, try to at least return other camera indices
+    if (candidates.empty()) {
+        std::vector<int> fallback;
+        fallback.reserve(std::max(0, NCams));
+        for (const auto& kv : cameraAngle) {
+            int cam = kv.first;
+            if (cam == refCamIdx) continue;
+            fallback.push_back(cam);
+            if (static_cast<int>(fallback.size()) >= NCams) break;
+        }
+        return fallback;
+    }
+
+    // Sort by distance (ascending) and pick top NCams
+    std::sort(candidates.begin(), candidates.end(), [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+        return a.first < b.first;
+        });
+
+    std::vector<int> bestCameras;
+    bestCameras.reserve(NCams);
+    std::unordered_set<int> chosen;
+    for (const auto& p : candidates) {
+        if (static_cast<int>(bestCameras.size()) >= NCams) break;
+        int cam = p.second;
+        if (cam == refCamIdx) continue;
+        if (chosen.insert(cam).second) {
+            bestCameras.push_back(cam);
+        }
+    }
+
+    // If not enough candidates, fill with any remaining camera indices (deterministic order from map)
+    if (static_cast<int>(bestCameras.size()) < NCams) {
+        for (const auto& kv : cameraAngle) {
+            if (static_cast<int>(bestCameras.size()) >= NCams) break;
+            int cam = kv.first;
+            if (cam == refCamIdx) continue;
+            if (chosen.find(cam) == chosen.end()) {
+                bestCameras.push_back(cam);
+                chosen.insert(cam);
+            }
+        }
+    }
+
     return bestCameras;
 }
