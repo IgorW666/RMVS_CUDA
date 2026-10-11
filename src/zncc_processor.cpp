@@ -1,4 +1,3 @@
-
 #include "../include/zncc_processor.h"
 #include "../include/cuda_homography.h"
 #include <cuda_runtime.h>
@@ -8,11 +7,12 @@
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
+#include <utility> // for std::pair
 
 
-constexpr float znccThreshold = 0.85f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
 constexpr bool induceDepthDevPenalty = true; // whether to apply depth deviation penalty in ZNCC evaluation
-constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change)
+constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
@@ -31,6 +31,11 @@ ZNCCProcessor::~ZNCCProcessor() {
 
 void ZNCCProcessor::setCameraMatrices(const float* H0, const float* K1inv, const float* e2) {
     setupCameraMatrices(H0, K1inv, e2);
+}
+
+void ZNCCProcessor::setCameraMatricesSecond(const float* H1, const float* K1inv1, const float* e2_1) {
+    // non-breaking addition: forwards to new device wrapper
+    setupCameraMatricesSecond(H1, K1inv1, e2_1);
 }
 
 void ZNCCProcessor::setNormalPermutations(const NormalPermutation* normalPermutations, int count) {
@@ -197,7 +202,7 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
         cudaFree(depthStepsPtr);
         cudaFree(resultDev);
 
-		//std::cout << "computeZNCC: Frontier points processed: " << frontierCount << ", valid results: " << packedResults.size() << std::endl;
+        //std::cout << "computeZNCC: Frontier points processed: " << frontierCount << ", valid results: " << packedResults.size() << std::endl;
 
         return packedResults;
     }
@@ -206,6 +211,234 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
         if (frontierPtr) cudaFree(frontierPtr);
         if (depthStepsPtr) cudaFree(depthStepsPtr);
         if (resultDev) cudaFree(resultDev);
+        throw;
+    }
+}
+
+
+/// New: compute ZNCC for two target images in a single kernel pass
+std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> ZNCCProcessor::computeZNCCDualTargets(
+    const ImageData& refImage,
+    const ImageData& targetImage0,
+    const ImageData& targetImage1,
+    const std::vector<FrontierPoint>& frontierPoints,
+    const std::vector<float>& depthSteps,
+    int normalNSteps) {
+
+    const int frontierCount = static_cast<int>(frontierPoints.size());
+    if (frontierCount == 0 || depthSteps.empty() || normalNSteps <= 0) {
+        return {};
+    }
+
+    FrontierPoint* frontierPtr = nullptr;
+    float* depthStepsPtr = nullptr;
+    float* resultDev0 = nullptr;
+    float* resultDev1 = nullptr;
+
+    const int depthCount = static_cast<int>(depthSteps.size());
+    const int resultFloatsPerFrontier = depthCount * normalNSteps;
+    const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;
+
+    try {
+        // frontier array
+        if (cudaMalloc((void**)&frontierPtr, frontierCount * sizeof(FrontierPoint)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc frontierPtr failed");
+        if (cudaMemcpy(frontierPtr, frontierPoints.data(), frontierCount * sizeof(FrontierPoint), cudaMemcpyHostToDevice) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy frontierPtr failed");
+
+        // depth steps array
+        if (cudaMalloc((void**)&depthStepsPtr, depthCount * sizeof(float)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc depthStepsPtr failed");
+        if (cudaMemcpy(depthStepsPtr, depthSteps.data(), depthCount * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy depthStepsPtr failed");
+
+        // set three image pitches for device constant memory
+        setImagePitchesDual(refImage.pitch, targetImage0.pitch, targetImage1.pitch);
+
+        // result buffers on device
+        if (cudaMalloc((void**)&resultDev0, resultFloatsTotal * sizeof(float)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc resultDev0 failed");
+        if (cudaMalloc((void**)&resultDev1, resultFloatsTotal * sizeof(float)) != cudaSuccess)
+            throw std::runtime_error("cudaMalloc resultDev1 failed");
+
+        // launch dual-target kernel
+        launchEvaluateZNCC_DualTargets(
+            refImage.gpuData,
+            targetImage0.gpuData,
+            targetImage1.gpuData,
+            frontierPtr,
+            depthStepsPtr,
+            resultDev0,
+            resultDev1,
+            depthCount,
+            normalNSteps,
+            refImage.width,
+            refImage.height,
+            targetImage0.width,
+            targetImage0.height,
+            targetImage1.width,
+            targetImage1.height,
+            frontierCount);
+
+        checkCudaError("computeZNCCDualTargets kernel launch");
+
+        // copy results back to host
+        std::vector<float> resultHost0(resultFloatsTotal);
+        std::vector<float> resultHost1(resultFloatsTotal);
+        if (cudaMemcpy(resultHost0.data(), resultDev0, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy resultDev0 DeviceToHost failed");
+        if (cudaMemcpy(resultHost1.data(), resultDev1, resultFloatsTotal * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess)
+            throw std::runtime_error("cudaMemcpy resultDev1 DeviceToHost failed");
+
+        // Repack results for both targets independently
+        std::vector<ResultPoint> packedResults0;
+        std::vector<ResultPoint> packedResults1;
+        packedResults0.reserve(frontierCount);
+        packedResults1.reserve(frontierCount);
+
+        for (int f = 0; f < frontierCount; ++f) {
+            // target 0
+            {
+                float bestScore = -std::numeric_limits<float>::infinity();
+                int bestDepthIdx = 0;
+                int bestNormalIdx = 0;
+
+                const int baseIdx = f * resultFloatsPerFrontier;
+                for (int d = 0; d < depthCount; ++d) {
+                    const int depthBase = baseIdx + d * normalNSteps;
+                    for (int n = 0; n < normalNSteps; ++n) {
+                        float score = resultHost0[depthBase + n];
+                        if (std::isnan(score)) continue;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestDepthIdx = d;
+                            bestNormalIdx = n;
+                        }
+                    }
+                }
+
+                if (induceDepthDevPenalty) {
+                    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
+                    bestScore = bestScore * depthDeviationPenalty;
+                }
+
+                if (std::isfinite(bestScore) && bestScore >= znccThreshold) {
+                    ResultPoint rp;
+                    rp.x = frontierPoints[f].x;
+                    rp.y = frontierPoints[f].y;
+                    rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
+                    rp.znccScore = bestScore;
+
+                    if (bestNormalIdx >= 0 && bestNormalIdx < static_cast<int>(normalPermutationsHost.size())) {
+                        NormalPermutation perm = normalPermutationsHost[bestNormalIdx];
+
+                        float3 parentNormal = host_normalize(frontierPoints[f].normal);
+
+                        float3 reference;
+                        if (std::fabs(parentNormal.z) < 0.999f) {
+                            reference = make_float3(0.0f, 0.0f, 1.0f);
+                        }
+                        else {
+                            reference = make_float3(0.0f, 1.0f, 0.0f);
+                        }
+
+                        float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
+                        float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
+
+                        float3 hypothesis = make_float3(
+                            parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
+                            parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
+                            parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
+                        );
+
+                        rp.normal = host_normalize(hypothesis);
+                    }
+                    else {
+                        rp.normal = host_normalize(frontierPoints[f].normal);
+                    }
+
+                    packedResults0.push_back(rp);
+                }
+            }
+
+            // target 1
+            {
+                float bestScore = -std::numeric_limits<float>::infinity();
+                int bestDepthIdx = 0;
+                int bestNormalIdx = 0;
+
+                const int baseIdx = f * resultFloatsPerFrontier;
+                for (int d = 0; d < depthCount; ++d) {
+                    const int depthBase = baseIdx + d * normalNSteps;
+                    for (int n = 0; n < normalNSteps; ++n) {
+                        float score = resultHost1[depthBase + n];
+                        if (std::isnan(score)) continue;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestDepthIdx = d;
+                            bestNormalIdx = n;
+                        }
+                    }
+                }
+
+                if (induceDepthDevPenalty) {
+                    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
+                    bestScore = bestScore * depthDeviationPenalty;
+                }
+
+                if (std::isfinite(bestScore) && bestScore >= znccThreshold) {
+                    ResultPoint rp;
+                    rp.x = frontierPoints[f].x;
+                    rp.y = frontierPoints[f].y;
+                    rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
+                    rp.znccScore = bestScore;
+
+                    if (bestNormalIdx >= 0 && bestNormalIdx < static_cast<int>(normalPermutationsHost.size())) {
+                        NormalPermutation perm = normalPermutationsHost[bestNormalIdx];
+
+                        float3 parentNormal = host_normalize(frontierPoints[f].normal);
+
+                        float3 reference;
+                        if (std::fabs(parentNormal.z) < 0.999f) {
+                            reference = make_float3(0.0f, 0.0f, 1.0f);
+                        }
+                        else {
+                            reference = make_float3(0.0f, 1.0f, 0.0f);
+                        }
+
+                        float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
+                        float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
+
+                        float3 hypothesis = make_float3(
+                            parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
+                            parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
+                            parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
+                        );
+
+                        rp.normal = host_normalize(hypothesis);
+                    }
+                    else {
+                        rp.normal = host_normalize(frontierPoints[f].normal);
+                    }
+
+                    packedResults1.push_back(rp);
+                }
+            }
+        }
+
+        // cleanup
+        cudaFree(frontierPtr);
+        cudaFree(depthStepsPtr);
+        cudaFree(resultDev0);
+        cudaFree(resultDev1);
+
+        return std::make_pair(std::move(packedResults0), std::move(packedResults1));
+    }
+    catch (...) {
+        if (frontierPtr) cudaFree(frontierPtr);
+        if (depthStepsPtr) cudaFree(depthStepsPtr);
+        if (resultDev0) cudaFree(resultDev0);
+        if (resultDev1) cudaFree(resultDev1);
         throw;
     }
 }

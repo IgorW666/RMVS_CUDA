@@ -1,10 +1,9 @@
-#include "../include/cuda_homography.h"
 #include <stdio.h>
 #include "../include/helper_math.h"
-
+#include "../include/cuda_homography.h"
 
 // calculate the total size of constant memory used sometime
-__constant__ float H0[9];                         // K2 * R * K1^-1
+__constant__ float H0[9];                         // K2 * R * K1^-1  << this should be H0_0
 __constant__ float K1inv[9];                      // K1^-1
 __constant__ float e2[3];                         // K2 * t
 __constant__ int windowRadius;
@@ -12,6 +11,14 @@ __constant__ NormalPermutation normalPermutations[16];
 __constant__ size_t refPitch;
 __constant__ size_t targetPitch;
 
+// --- New constants for second target camera
+__constant__ float H1[9];                         // second target: K2' * R' * K1^-1 << this should be H0_1
+__constant__ float K1inv1[9];                     // (optional) if a different K1inv needed; typically same as K1inv
+__constant__ float e2_1[3];                       // K2' * t'
+__constant__ size_t target2Pitch;
+
+
+// device helper functions remain unchanged
 __device__
 inline float3 matmul3x3_point(const float* mat, float3 p) {
     return make_float3(
@@ -32,6 +39,25 @@ bool projectSample(float3 referencePoint, float depth, float3 normal, float2& xy
         h.x + e2[0] * s,
         h.y + e2[1] * s,
         h.z + e2[2] * s
+    );
+    if (p.z <= 1e-6f)
+        return false;
+    xy = make_float2(p.x / p.z, p.y / p.z);
+    return true;
+}
+
+// Generic projectSample that accepts explicit camera constants (for dual-target kernel)
+__device__
+bool projectSampleGeneric(const float* H, const float* Kinv_local, const float* e_local,
+    float3 referencePoint, float depth, float3 normal, float2& xy)
+{
+    float3 q = matmul3x3_point(Kinv_local, referencePoint);
+    float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / depth;
+    float3 h = matmul3x3_point(H, referencePoint);
+    float3 p = make_float3(
+        h.x + e_local[0] * s,
+        h.y + e_local[1] * s,
+        h.z + e_local[2] * s
     );
     if (p.z <= 1e-6f)
         return false;
@@ -198,8 +224,8 @@ void evaluateZNCC(
 
     float3 centerRay = matmul3x3_point(K1inv, centerPixel);
 
-    // A conventional pinhole camera produces centerRay.z ~= 1.
-    // Divide by ray.z to support a general invertible K matrix.
+    // a conventional pinhole camera produces centerRay.z ~= 1.
+    // divide by ray.z to support a general invertible K matrix.
     if (fabsf(centerRay.z) < 1e-8f)
         return;
 
@@ -225,21 +251,21 @@ void evaluateZNCC(
     const int normalStride = windowSize * yStride;
     const int depthStride = normalNSteps * normalStride;
     const int frontierStride = depthNSteps * depthStride;
-    
+
     float sum_ref = 0.0f;
     float sum_target = 0.0f;
     float sum_sq_ref = 0.0f;
     float sum_sq_target = 0.0f;
     float sum_product = 0.0f;
 
-    for (int winY = -windowRadius; winY <= windowRadius; ++winY)        
+    for (int winY = -windowRadius; winY <= windowRadius; ++winY)
     {
-		const int py = refY + winY;
+        const int py = refY + winY;
         const float refPtYf = static_cast<float>(py);
 
         for (int winX = -windowRadius; winX <= windowRadius; ++winX)
         {
-			const int px = refX + winX;
+            const int px = refX + winX;
             const float refPtXf = static_cast<float>(px);
 
             float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
@@ -252,11 +278,11 @@ void evaluateZNCC(
 
             const int winYIndex = winY + windowRadius;
 
-			float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
+            float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
 
             float* refRow = (float*)((char*)refImg + py * refPitch);
             float ref_val = refRow[px];
-			
+
             float target_val = interpolateTarget(targetImg, targetWidth, targetHeight, uv, targetPitch);
 
             accumulateZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, ref_val, target_val);
@@ -274,6 +300,175 @@ void evaluateZNCC(
 }
 
 
+/// Dual-target kernel: computes ZNCC for two target images per hypothesis
+__global__
+void evaluateZNCC_DualTargets(
+    const float* refImg,
+    const float* targetImg0,
+    const float* targetImg1,
+    const FrontierPoint* frontier,
+    const float* depthSteps,
+    float* result0,
+    float* result1,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int target0Width,
+    int target0Height,
+    int target1Width,
+    int target1Height)
+{
+    const int frontierIndex = blockIdx.x;
+    const int hypothesis = threadIdx.x;
+    const int depthIndex = hypothesis / normalNSteps;
+    const int normalIndex = hypothesis % normalNSteps;
+
+    if (depthIndex >= depthNSteps)
+        return;
+
+    FrontierPoint parent = frontier[frontierIndex];
+
+    const float depth = parent.depth + depthSteps[depthIndex];
+    if (depth <= 0.0f)
+        return;
+
+    const int refX = parent.x;
+    const int refY = parent.y;
+
+    NormalPermutation perm = normalPermutations[normalIndex];
+
+    float3 parentNormal = normalize(parent.normal);
+
+    float3 parentTangent;
+    float3 parentBitangent;
+    float3 reference;
+
+    if (fabsf(parentNormal.z) < 0.999f) {
+        reference = make_float3(0.0f, 0.0f, 1.0f);
+    }
+    else {
+        reference = make_float3(0.0f, 1.0f, 0.0f);
+    }
+
+    parentTangent = normalize(cross(reference, parentNormal));
+    parentBitangent = normalize(cross(parentNormal, parentTangent));
+
+    float3 normVec = normalize(
+        parentNormal
+        + perm.tangent * parentTangent
+        + perm.bitangent * parentBitangent
+    );
+
+    float3 centerPixel = make_float3((float)refX, (float)refY, 1.0f);
+    float3 centerRay = matmul3x3_point(K1inv, centerPixel);
+    if (fabsf(centerRay.z) < 1e-8f) return;
+    float rayScale = depth / centerRay.z;
+    float3 pivotPoint = make_float3(centerRay.x * rayScale, centerRay.y * rayScale, centerRay.z * rayScale);
+
+    const float planeOffset =
+        normVec.x * pivotPoint.x
+        + normVec.y * pivotPoint.y
+        + normVec.z * pivotPoint.z;
+
+    if (fabsf(planeOffset) < 1e-8f)
+        return;
+
+    const int windowSize = 1 + 2 * windowRadius;
+
+    // Shared ref accumulators (same for both targets)
+    float sum_ref = 0.0f;
+    float sum_sq_ref = 0.0f;
+
+    // Per-target accumulators
+    float sum_target0 = 0.0f;
+    float sum_sq_target0 = 0.0f;
+    float sum_product0 = 0.0f;
+
+    float sum_target1 = 0.0f;
+    float sum_sq_target1 = 0.0f;
+    float sum_product1 = 0.0f;
+
+    for (int winY = -windowRadius; winY <= windowRadius; ++winY)
+    {
+        const int py = refY + winY;
+        const float refPtYf = static_cast<float>(py);
+
+        for (int winX = -windowRadius; winX <= windowRadius; ++winX)
+        {
+            const int px = refX + winX;
+            const float refPtXf = static_cast<float>(px);
+
+            float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
+
+            float2 uv0;
+            float2 uv1;
+
+            bool valid0 = projectSampleGeneric(H0, K1inv, e2, refPt, planeOffset, normVec, uv0);
+            bool valid1 = projectSampleGeneric(H1, K1inv, e2_1, refPt, planeOffset, normVec, uv1);
+
+            float2 sampleUV0 = valid0 ? uv0 : make_float2(-1.f, -1.f);
+            float2 sampleUV1 = valid1 ? uv1 : make_float2(-1.f, -1.f);
+
+            float* refRow = (float*)((char*)refImg + py * refPitch);
+            float ref_val = refRow[px];
+
+            float target_val0 = interpolateTarget(targetImg0, target0Width, target0Height, sampleUV0, targetPitch);
+            float target_val1 = interpolateTarget(targetImg1, target1Width, target1Height, sampleUV1, target2Pitch);
+
+            // update reference accumulators once per sample (both targets use same ref)
+            sum_ref += ref_val;
+            sum_sq_ref += ref_val * ref_val;
+
+            // update target 0 accumulators
+            sum_target0 += target_val0;
+            sum_sq_target0 += target_val0 * target_val0;
+            sum_product0 += ref_val * target_val0;
+
+            // update target 1 accumulators
+            sum_target1 += target_val1;
+            sum_sq_target1 += target_val1 * target_val1;
+            sum_product1 += ref_val * target_val1;
+        }
+    }
+
+    const int count = windowSize * windowSize;
+
+    // finish ZNCC for both targets; finishZNCC expects full ref sums, so we pass them accordingly
+    float zncc0;
+    {
+        float mean_ref = sum_ref / (float)count;
+        float mean_target = sum_target0 / (float)count;
+        float var_ref = sum_sq_ref / (float)count - mean_ref * mean_ref;
+        float var_target = sum_sq_target0 / (float)count - mean_target * mean_target;
+        float cov = sum_product0 / (float)count - mean_ref * mean_target;
+        var_ref = max(1e-6f, var_ref);
+        var_target = max(1e-6f, var_target);
+        zncc0 = cov / sqrtf(var_ref * var_target);
+    }
+
+    float zncc1;
+    {
+        float mean_ref = sum_ref / (float)count;
+        float mean_target = sum_target1 / (float)count;
+        float var_ref = sum_sq_ref / (float)count - mean_ref * mean_ref;
+        float var_target = sum_sq_target1 / (float)count - mean_target * mean_target;
+        float cov = sum_product1 / (float)count - mean_ref * mean_target;
+        var_ref = max(1e-6f, var_ref);
+        var_target = max(1e-6f, var_target);
+        zncc1 = cov / sqrtf(var_ref * var_target);
+    }
+
+    int resultIdx =
+        frontierIndex * (depthNSteps * normalNSteps)
+        + depthIndex * normalNSteps
+        + normalIndex;
+
+    result0[resultIdx] = zncc0;
+    result1[resultIdx] = zncc1;
+}
+
+
 void launchEvaluateZNCC(const float* refImg,
     const float* targetImg,
     const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
@@ -285,9 +480,9 @@ void launchEvaluateZNCC(const float* refImg,
     int refHeight,
     int targetWidth,
     int targetHeight,
-    int frontierCount) {    
-    
-    evaluateZNCC <<<frontierCount, depthNSteps * normalNSteps>>> (
+    int frontierCount) {
+
+    evaluateZNCC << <frontierCount, depthNSteps* normalNSteps >> > (
         refImg,
         targetImg,
         frontier,
@@ -301,11 +496,54 @@ void launchEvaluateZNCC(const float* refImg,
         targetHeight);
 }
 
+void launchEvaluateZNCC_DualTargets(const float* refImg,
+    const float* targetImg0,
+    const float* targetImg1,
+    const FrontierPoint* frontier,
+    const float* depthSteps,
+    float* result0,
+    float* result1,
+    int depthNSteps,
+    int normalNSteps,
+    int refWidth,
+    int refHeight,
+    int target0Width,
+    int target0Height,
+    int target1Width,
+    int target1Height,
+    int frontierCount)
+{
+    evaluateZNCC_DualTargets << <frontierCount, depthNSteps* normalNSteps >> > (
+        refImg,
+        targetImg0,
+        targetImg1,
+        frontier,
+        depthSteps,
+        result0,
+        result1,
+        depthNSteps,
+        normalNSteps,
+        refWidth,
+        refHeight,
+        target0Width,
+        target0Height,
+        target1Width,
+        target1Height);
+}
+
 void setupCameraMatrices(const float* h0_host, const float* k1inv_host, const float* e2_host) {
     cudaMemcpyToSymbol(H0, h0_host, 9 * sizeof(float));
     cudaMemcpyToSymbol(K1inv, k1inv_host, 9 * sizeof(float));
     cudaMemcpyToSymbol(e2, e2_host, 3 * sizeof(float));
     checkCudaError("setupCameraMatrices"); // handy!
+}
+
+// copy second-camera matrices into device constant memory
+void setupCameraMatricesSecond(const float* h1_host, const float* k1inv1_host, const float* e2_1_host) {
+    cudaMemcpyToSymbol(H1, h1_host, 9 * sizeof(float));
+    cudaMemcpyToSymbol(K1inv1, k1inv1_host, 9 * sizeof(float));
+    cudaMemcpyToSymbol(e2_1, e2_1_host, 3 * sizeof(float));
+    checkCudaError("setupCameraMatricesSecond");
 }
 
 void setupNormalPermutations(const NormalPermutation* normalPermutations_host, int count) {
@@ -330,6 +568,14 @@ void setImagePitches(size_t refPitch_host, size_t targetPitch_host) {
     cudaMemcpyToSymbol(refPitch, &refPitch_host, sizeof(size_t));
     cudaMemcpyToSymbol(targetPitch, &targetPitch_host, sizeof(size_t));
     checkCudaError("setImagePitches");
+}
+
+// host helper to set 3 image pitches (ref, target0, target1)
+void setImagePitchesDual(size_t refPitch_host, size_t targetPitch_host, size_t target2Pitch_host) {
+    cudaMemcpyToSymbol(refPitch, &refPitch_host, sizeof(size_t));
+    cudaMemcpyToSymbol(targetPitch, &targetPitch_host, sizeof(size_t));
+    cudaMemcpyToSymbol(target2Pitch, &target2Pitch_host, sizeof(size_t));
+    checkCudaError("setImagePitchesDual");
 }
 
 void checkCudaError(const char* message) {

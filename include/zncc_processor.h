@@ -1,10 +1,10 @@
-
 #pragma once
 
 #include "image_handler.h"
 #include "types.h"
 #include <cuda_runtime.h>
 #include <vector>
+#include <utility> // for std::pair
 
 /*
 * Zncc Score will have pitch value according to the number of tested depth and normal hypotheses
@@ -42,6 +42,15 @@ public:
     */
     void setCameraMatrices(const float* H0, const float* K1inv, const float* e2);
 
+    /**
+    * Set second target camera data (non-breaking addition).
+    *
+    * @param H1    3x3 matrix for second target (row-major)
+    * @param K1inv1 3x3 K1^-1 or K1inv for second target projection
+    * @param e2_1  3-vector K2' * t'
+    */
+    void setCameraMatricesSecond(const float* H1, const float* K1inv1, const float* e2_1);
+
 
     void setNormalPermutations(const NormalPermutation* normalPermutations, int count); // normal permutations are small >> __constant__
 
@@ -60,6 +69,19 @@ public:
         const std::vector<FrontierPoint>& frontierPoints,
         const std::vector<float>& depthSteps,
         int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/);
+
+    /**
+     * Execute ZNCC computation for two target images in a single kernel pass.
+     *
+     * Returns a pair of result vectors: first = results for target0, second = results for target1.
+     */
+    std::pair<std::vector<ResultPoint>, std::vector<ResultPoint>> computeZNCCDualTargets(
+        const ImageData& refImage,
+        const ImageData& targetImage0,
+        const ImageData& targetImage1,
+        const std::vector<FrontierPoint>& frontierPoints,
+        const std::vector<float>& depthSteps,
+        int normalNSteps);
 
 private:
     int imgWidth;
