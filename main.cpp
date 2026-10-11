@@ -13,20 +13,14 @@
 #include <cstdio> // for snprintf
 #include <unordered_map>
 
-const int WINDOW_RADIUS = 4;
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16, 32 doesn't seem to improve anything
 const float CONE_ANGLE_DEGREES = 10.0f;         // 5.f this has to change. I need more then 1 angle permutation
-const float DEPTH_STEP_SIZE = 0.0001f;          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
+const float DEPTH_STEP_SIZE = 0.00001f; // 0.0001          // used to calculate depth steps based on average depth << if clouds come out segmented/stepped then this is too small
 const float BEST_CAMERA_ANGLE_DEGREES = 15.0f;  // dont know yet. in theory this should be 25-30
 
-struct HomographyParams {
-    std::array<float, 9> H0;     // K2 * R * K1^-1
-    std::array<float, 9> K1inv;  // K1^-1
-    std::array<float, 3> e2;     // K2 * t
-};
 // move helpers to another file
 HomographyParams calcHomographyParams2(const Camera& cam1, const Camera& cam2);
 void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam);
@@ -36,188 +30,33 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
 std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
 std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
 
-// Plane-induced homography: H = K2 * (R + t * n^T / d) * K1^-1
-// p' ~ H0 * p + (K2 * t) * (n^T * K1^-1 * p) / d
-HomographyParams calcHomographyParams(const Camera& cam1, const Camera& cam2) {
-    cv::Mat K1 = cam1.intrinsics.camera_matrix;
-    cv::Mat K2 = cam2.intrinsics.camera_matrix;
-    cv::Mat R = cam2.extrinsics.rotation * cam1.extrinsics.rotation.t();
-	cv::Mat t = cam2.extrinsics.translation - R * cam1.extrinsics.translation; // if t is NOT camera center
-	//cv::Mat t = cam2.extrinsics.rotation * (cam1.extrinsics.translation - cam2.extrinsics.translation); // if t is camera center
 int main() {
 
-
-
-
-
-
-
-
-    cv::Mat K1inv = K1.inv();
-    cv::Mat H0 = K2 * R * K1inv;
-    cv::Mat e = K2 * t; // 3x1
     NormalPermutationGenerator normalPermGen(16);
     std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(CONE_ANGLE_DEGREES, true);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    HomographyParams params;
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            params.H0[i * 3 + j] = static_cast<float>(H0.at<double>(i, j));
-            params.K1inv[i * 3 + j] = static_cast<float>(K1inv.at<double>(i, j));
-        }
-        params.e2[i] = static_cast<float>(e.at<double>(i, 0));
     if (SAVE_DEBUG_DATA) {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
-
-
-
-
-
-
-
-
-
-
-
-
-
     }
 
-    return params;
-}
-	std::string folderPath = "data\\dFountain\\"; 
+    std::string folderPath = "data\\skull\\";
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-void updatePlaneSweepResult(cv::Mat& planeSweepResult, cv::Mat& currentResult, float currentDepth, cv::Mat& depthResult)
-{
-	const int rows = planeSweepResult.rows;
-	const int cols = planeSweepResult.cols;
-	const float threshold = 0.8f; // ZNCC threshold for valid matches
-    for (int r = 0; r < rows; r++) {
-#pragma omp parallel for
-        for (int c = 0; c < cols; c++) {
-            float currentValue = currentResult.at<float>(r, c);
-            float& bestValue = planeSweepResult.at<float>(r, c);
-			float currentDepthValue = depthResult.at<float>(r, c);
-            // Update if the current value is better (higher ZNCC score)
-            if (currentValue > bestValue) {
-                bestValue = currentValue;
-                if (currentValue > threshold) { // Only update depth if ZNCC score is above threshold
-                    depthResult.at<float>(r, c) = currentDepth;
-                }
-            }
-		}
     std::vector<Camera> cameras;
 
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\dFountain\\fountain.csv");        
+        cameras = cameraLoader.loadFromCSV("data\\skull\\skull.csv");
     }
-}
 
-void updatePlaneSweepResultWithDepthRegularization(cv::Mat& planeSweepResult, cv::Mat& currentResult, float currentDepth, cv::Mat& depthResult)
-{
-    const int rows = planeSweepResult.rows;
-    const int cols = planeSweepResult.cols;
-    const float threshold = 0.65f;
-    const float depthTolerance = 0.01f; // 10% tolerance for depth similarity
-    const int minNeighbors = 1; // Minimum non-zero neighbors required
-	std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);	
+    std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
 
-    for (int r = 0; r < rows; r++) {
-#pragma omp parallel for
-        for (int c = 0; c < cols; c++) {
-            float currentValue = currentResult.at<float>(r, c);
-            float& bestValue = planeSweepResult.at<float>(r, c);
     ImageHandler imageHandler;
 
-            if (currentValue > bestValue && currentValue > threshold) {
-                // Collect non-zero neighbor depths (8-connected)
-                std::vector<float> neighborDepths;
-                for (int dr = -1; dr <= 1; dr++) {
-                    for (int dc = -1; dc <= 1; dc++) {
-                        if (dr == 0 && dc == 0) continue; // Skip center pixel
     for (int refCamIdx = 0; refCamIdx < cameras.size(); ++refCamIdx) {
 
-                        int nr = r + dr;
-                        int nc = c + dc;
         std::pair<int, int> bestCameraPair = findBestCameraPair(refCamIdx, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
-		auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+        auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
 
-                        // Check bounds
-                        if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                            float neighborDepth = depthResult.at<float>(nr, nc);
-                            if (neighborDepth > 0.0f) {
-                                neighborDepths.push_back(neighborDepth);
-                            }
-                        }
-                    }
         std::cout << "Reference Camera: " << refCamIdx << ", Best Cameras:";
         for (int camIdx : bestCameras) {
             std::cout << " " << camIdx;
@@ -225,19 +64,19 @@ void updatePlaneSweepResultWithDepthRegularization(cv::Mat& planeSweepResult, cv
         std::cout << std::endl;
 
         std::string refImgName = cameras[refCamIdx].name;
-        std::string targetImgName = cameras[bestCameraPair.second].name;		
+        std::string targetImgName = cameras[bestCameraPair.second].name;
 
         std::string refImgPth = folderPath + "img\\" + refImgName;
-		std::string targetImgPth = folderPath + "img\\" + targetImgName;
+        std::string targetImgPth = folderPath + "img\\" + targetImgName;
 
         ImageData refImage = imageHandler.loadImageToGPU(refImgPth); // idx 0
         ImageData targetImage = imageHandler.loadImageToGPU(targetImgPth); // idx 1
         float avgDepth = 0.0f; // stat 38.11, 142.32
 
         CloudLoader cloudLoader; // make static !
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\dFountain\\fountain.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\skull\\skull.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
 
-		float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
+        float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
@@ -275,10 +114,6 @@ void updatePlaneSweepResultWithDepthRegularization(cv::Mat& planeSweepResult, cv
             }
         }
 
-                // If no neighbors yet, accept the update (first pass)
-                if (neighborDepths.empty()) {
-                    bestValue = currentValue;
-                    depthResult.at<float>(r, c) = currentDepth;
         // Frontier growing loop: expand around survived ResultPoints until no new frontier points can be built
         size_t iteration = 0;
         const size_t maxIterations = static_cast<size_t>(IMG_WIDTH) * static_cast<size_t>(IMG_HEIGHT); // safety cap
@@ -309,26 +144,12 @@ void updatePlaneSweepResultWithDepthRegularization(cv::Mat& planeSweepResult, cv
                     normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
                     visited.at<uchar>(rp.y, rp.x) = 1;
                 }
-                // If neighbors exist, check similarity
-                else if (neighborDepths.size() >= minNeighbors) {
-                    // Calculate average neighbor depth
-                    float avgNeighborDepth = 0.0f;
-                    for (float d : neighborDepths) {
-                        avgNeighborDepth += d;
-                    }
-                    avgNeighborDepth /= neighborDepths.size();
             }
 
-                    // Check if current depth is within tolerance of average neighbor depth
-                    float depthDiff = std::abs(currentDepth - avgNeighborDepth);
-                    float tolerance = avgNeighborDepth * depthTolerance;
             // Build next frontier around each survived ResultPoint (8-connected neighbors)
             std::vector<FrontierPoint> nextFrontier;
             nextFrontier.reserve(results.size() * 8);
 
-                    if (depthDiff <= tolerance) {
-                        bestValue = currentValue;
-                        depthResult.at<float>(r, c) = currentDepth;
             for (const auto& rp : results) {
                 for (int dy = -1; dy <= 1; ++dy) {
                     for (int dx = -1; dx <= 1; ++dx) {
@@ -359,33 +180,14 @@ void updatePlaneSweepResultWithDepthRegularization(cv::Mat& planeSweepResult, cv
             cv::imshow("Depth Map Progress", progressImage);
             cv::waitKey(1);
         }
-    }
-}
 
-void saveDepthAsPointCloud(const cv::Mat& depthResult, const cv::Mat& K, const std::string& filename)
-{
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-        throw std::runtime_error("Could not open file: " + filename);
-    }
         cv::destroyAllWindows();
         depthMapInit = depthMap;
 
-    float fx = static_cast<float>(K.at<double>(0, 0));
-    float fy = static_cast<float>(K.at<double>(1, 1));
-    float cx = static_cast<float>(K.at<double>(0, 2));
-    float cy = static_cast<float>(K.at<double>(1, 2));
         std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
 
-    for (int y = 0; y < depthResult.rows; ++y) {
-        for (int x = 0; x < depthResult.cols; ++x) {
-            float depth = depthResult.at<float>(y, x);
         saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[bestCameraPair.first]);
 
-            // Skip zero depth values
-            if (depth == 0.0f) {
-                continue;
-            }
         if (SAVE_DEBUG_DATA) {
             saveNormalMapPng("result_normal_map.png", normalMap, depthMapInit);
             cv::Mat depthMapToSave, depthMapNormalized;
@@ -394,72 +196,40 @@ void saveDepthAsPointCloud(const cv::Mat& depthResult, const cv::Mat& K, const s
             cv::imwrite("final_depth_map.png", depthMapToSave);
         }
 
-            // Backproject pixel to 3D using camera intrinsics
-            float Z = depth;
-            float X = (x - cx) * Z / fx;
-            float Y = (y - cy) * Z / fy;
         imageHandler.freeGPUImage(refImage);
         imageHandler.freeGPUImage(targetImage);
 
-            file << std::fixed << std::setprecision(6)
-                << X << " " << Y << " " << Z << "\n";
-        }
         std::cout << "\n\nReference Camera[" << refCamIdx << "] Iterations: " << iteration << "\n";
 
     }
 
-    file.close();
     return 0;
 
 }
 
-int main() {
-    try {
-        // Initialize
-        ImageHandler imageHandler;
-        CameraLoader cameraLoader;
 HomographyParams calcHomographyParams2(
     const Camera& cam1,
     const Camera& cam2) {
 
-        auto cameras = cameraLoader.loadFromCSV("data\\budda\\budda.csv");
     // Intrinsics
     cv::Mat K1 = cam1.intrinsics.camera_matrix;
     cv::Mat K2 = cam2.intrinsics.camera_matrix;
 
-        /*for (int i : { 0, 6 }) {
-            const Camera& c = cameras[i];
-            std::cout << c.name << " tx,ty,tz = " << c.extrinsics.translation.t()
-                << " f=" << c.intrinsics.camera_matrix.at<double>(0, 0)
-                << " px,py=" << c.intrinsics.camera_matrix.at<double>(0, 2) << ","
-                << c.intrinsics.camera_matrix.at<double>(1, 2) << "\n";
-        }*/
     // Assume extrinsics are world->camera: X_cam = R * X_world + t
     cv::Mat R1 = cam1.extrinsics.rotation;   // world->camera rotation for cam1
     cv::Mat R2 = cam2.extrinsics.rotation;   // world->camera rotation for cam2
     cv::Mat t1 = cam1.extrinsics.translation; // world->camera translation for cam1 (3x1)
     cv::Mat t2 = cam2.extrinsics.translation; // world->camera translation for cam2 (3x1)
 
-        cv::Mat dbgR = cameras[1].extrinsics.rotation * cameras[0].extrinsics.rotation.t();
-        cv::Mat dbgT = cameras[1].extrinsics.rotation *
-            (cameras[0].extrinsics.translation - cameras[1].extrinsics.translation);
-        std::cout << "baseline |t| = " << cv::norm(dbgT) << "\n";
     // Relative pose: transform points from camera1 frame to camera2 frame
     // X_c2 = R2 * R1^T * X_c1 + (t2 - R2 * R1^T * t1)
     cv::Mat R_rel = R2 * R1.t();
     cv::Mat t_rel = t2 - R_rel * t1;
 
-        // Load images FIRST to get actual dimensions
-        std::cout << "Loading images...\n";
-        ImageData refImage = imageHandler.loadImageToGPU("data\\budda\\img\\41454.jpg"); // idx 0
-        ImageData targetImage = imageHandler.loadImageToGPU("data\\budda\\img\\41457.jpg"); // idx 6
     cv::Mat K1inv = K1.inv();
     cv::Mat H0 = K2 * R_rel * K1inv;
     cv::Mat e2 = K2 * t_rel;
 
-        // Use ACTUAL image dimensions
-        const int IMG_WIDTH = refImage.width;
-        const int IMG_HEIGHT = refImage.height;        
     HomographyParams params;
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
@@ -471,7 +241,6 @@ HomographyParams calcHomographyParams2(
     return params;
 }
 
-        ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 // Save normal map into XYZ file (x y z nx ny nz), using depth map to backproject points.
 void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam)
 {
@@ -481,58 +250,37 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
         return;
     }
 
-        float f = static_cast<float>(cameras[0].intrinsics.camera_matrix.at<double>(0, 0));
-        const float BASE_DEPTH = static_cast<float>(f * cv::norm(dbgT) / 50.0); // f from camera 0
     const cv::Mat K = cam.intrinsics.camera_matrix; // CV_64F
     const double fx = K.at<double>(0, 0);
     const double fy = K.at<double>(1, 1);
     const double cx = K.at<double>(0, 2);
     const double cy = K.at<double>(1, 2);
 
-		// Depth loop parameters (budda dataset: 0.005 to 0.5 * BASE_DEPTH, 500 steps)
-		const float DEPTH_MIN = BASE_DEPTH * 0.05f;  // depth min is actually disparity max (1/depth)
-		const float DEPTH_MAX = BASE_DEPTH * 0.5f;    // depth max is actually disparity min (1/depth)
-        const int DEPTH_STEPS = 10000;
     cv::Mat R = cam.extrinsics.rotation;       // 3x3 CV_64F
     cv::Mat t = cam.extrinsics.translation;    // 3x1 CV_64F
     cv::Mat Rinv = R.t();
 
-
-        HomographyParams hp = calcHomographyParams(cameras[0], cameras[3]);
-        processor.setCameraMatrices(hp.H0.data(), hp.K1inv.data(), hp.e2.data());
     const int h = depthMap.rows;
     const int w = depthMap.cols;
 
-        cv::Mat normalDummy(IMG_HEIGHT, IMG_WIDTH, CV_32FC3, cv::Scalar(0.0f, 0.0f, 1.0f));
-        ImageData normalMap = imageHandler.loadImageToGPU(normalDummy);
     const size_t FLUSH_THRESHOLD = 1 << 20; // 1 MB
     std::string buffer;
     buffer.reserve(FLUSH_THRESHOLD + 256);
 
-        cv::Mat planeSweepResult(IMG_HEIGHT, IMG_WIDTH, CV_32FC1, cv::Scalar(0.f));
-        cv::Mat depthResult(IMG_HEIGHT, IMG_WIDTH, CV_32FC1, cv::Scalar(0.f));
     char lineBuf[256];
     for (int v = 0; v < h; ++v) {
         for (int u = 0; u < w; ++u) {
             float z = depthMap.at<float>(v, u);
             if (!(z > 0.0f)) continue; // skip invalid / negative depths
 
-        // Loop over different depth values
-        for (int depthStep = 0; depthStep < DEPTH_STEPS; ++depthStep) {
-            // Calculate disparity (1/depth) linearly, then convert back to depth
-            float disparity = (1.0f / DEPTH_MAX) + (1.0f / DEPTH_MIN - 1.0f / DEPTH_MAX) * depthStep / (DEPTH_STEPS - 1);
-            float depth = 1.0f / disparity;
             // Back-project to camera coordinates
             const double Xc = (static_cast<double>(u) - cx) * static_cast<double>(z) / fx;
             const double Yc = (static_cast<double>(v) - cy) * static_cast<double>(z) / fy;
             const double Zc = static_cast<double>(z);
 
-            //depth = 1 / depth; 
             cv::Mat Xc_mat = (cv::Mat_<double>(3, 1) << Xc, Yc, Zc);
             cv::Mat Xw = Rinv * (Xc_mat - t);
 
-            std::cout << "Processing depth " << depthStep + 1 << "/" << DEPTH_STEPS
-                << " (depth = " << depth << ", disparity = " << disparity << ")...\n";
             cv::Vec3f n = normalMap.at<cv::Vec3f>(v, u);
             float nx = n[0], ny = n[1], nz = n[2];
             // normalize normal if needed
@@ -545,9 +293,6 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
                 nx = 0.f; ny = 0.f; nz = 1.f;
             }
 
-            // Create depth map with current depth value
-            cv::Mat depthDummy(IMG_HEIGHT, IMG_WIDTH, CV_32F, cv::Scalar(depth));
-            ImageData depthMap = imageHandler.loadImageToGPU(depthDummy);
             int nbytes = snprintf(lineBuf, sizeof(lineBuf), "%.6f %.6f %.6f %.6f %.6f %.6f\n",
                 Xw.at<double>(0, 0),
                 Xw.at<double>(1, 0),
@@ -557,8 +302,6 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
                 buffer.append(lineBuf, static_cast<size_t>(nbytes));
             }
 
-            // Compute ZNCC
-            ImageData result = processor.computeZNCC(refImage, targetImage, depthMap, normalMap);
             if (buffer.size() >= FLUSH_THRESHOLD) {
                 out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
                 buffer.clear();
@@ -566,20 +309,12 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
         }
     }
 
-            if (false) {
-                // Generate output filename with depth index
-                std::ostringstream oss;
-                oss << "znccRes/zncc_output_depth_" << std::setfill('0') << std::setw(2) << depthStep << ".png";
-                std::string outputFilename = oss.str();
     if (!buffer.empty()) {
         out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     }
     out.close();
 }
 
-                // Save results (ZNCC is in [-1, 1])
-                std::cout << "Saving " << outputFilename << "\n\n\n";
-                imageHandler.saveImageFromGPU(result, outputFilename.c_str(), true);
 // Save normal map as a 3-channel PNG for visualization. Valid pixels are taken from depthMap mask.
 void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap)
 {
@@ -608,14 +343,11 @@ void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, con
         }
     }
 
-            cv::Mat resultHost = imageHandler.getImageFromGPU(result); // I need a cv::Mat version of result here
     if (!cv::imwrite(filename, vis8)) {
         std::cerr << "Failed to write normal PNG: " << filename << "\n";
     }
 }
 
-            updatePlaneSweepResult(planeSweepResult, resultHost, depth, depthResult);
-			//updatePlaneSweepResultWithDepthRegularization(planeSweepResult, resultHost, depth, depthResult);
 std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna be so much fun to debug it with disparity :/
     std::vector<float> depthSteps(steps); // hope this is enough to make it contiguous    
     int startIdx = -steps / 2;
@@ -625,9 +357,6 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
     return depthSteps;
 }
 
-            // Cleanup for this iteration
-            imageHandler.freeGPUImage(depthMap);
-        }
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
     // Compute angle between camera optical axes (baseline angle = angle between viewing directions).
     // For extrinsics given as X_cam = R * X_world + t, the camera center is C = -R.t() * t,
@@ -635,7 +364,6 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
     const cv::Mat z = (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
 
-        imageHandler.freeGPUImage(normalMap);
     const int n = static_cast<int>(cameras.size());
     for (int i = 0; i < n; ++i) {
         const cv::Mat R1 = cameras[i].extrinsics.rotation;
@@ -646,9 +374,6 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
             cv::Mat dir2 = R2.t() * z;
             double n2 = cv::norm(dir2);
 
-        // Cleanup
-        imageHandler.freeGPUImage(refImage);
-        imageHandler.freeGPUImage(targetImage);
             double cosang = 0.0;
             if (n1 > 1e-12 && n2 > 1e-12) {
                 cosang = (dir1.dot(dir2)) / (n1 * n2);
@@ -657,8 +382,6 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
             cosang = std::max(-1.0, std::min(1.0, cosang));
             float angleDeg = static_cast<float>(std::acos(cosang) * 180.0 / CV_PI);
 
-        // Save depth result as point cloud (XYZ format)
-        saveDepthAsPointCloud(depthResult, cameras[0].intrinsics.camera_matrix, "final_depth_result.xyz");
             cameraAngle[i][j] = angleDeg;
             cameraAngle[j][i] = angleDeg; // symmetric
         }
@@ -666,12 +389,6 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
     return cameraAngle;
 }
 
-		// save final plane sweep result and depth map as CV_8U images (normalized)
-		cv::Mat planeSweepResultNormalized, depthResultNormalized;
-		cv::normalize(planeSweepResult, planeSweepResultNormalized, 0, 255 , cv::NORM_MINMAX);
-		cv::normalize(depthResult, depthResultNormalized, 0, 255 , cv::NORM_MINMAX);
-		cv::imwrite("plane_sweep_result.png", planeSweepResultNormalized);
-		cv::imwrite("depth_result.png", depthResultNormalized);
 // Replace existing findBestCameraPair implementation with this safe version
 std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     auto it = cameraAngle.find(refCamIdx);
@@ -695,8 +412,6 @@ std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered
     return bestPair;
 }
 
-        std::cout << "Done!\n";
-        return 0;
 
 std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     std::vector<int> bestCameras;
@@ -704,9 +419,6 @@ std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, co
     if (it == cameraAngle.end() || it->second.empty()) {
         return bestCameras; // empty
     }
-    catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
     for (const auto& kv2 : it->second) {
         int cam2 = kv2.first;
         float angle = kv2.second;
