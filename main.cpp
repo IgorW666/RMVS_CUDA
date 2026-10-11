@@ -13,29 +13,102 @@ const int WINDOW_RADIUS = 4;
 struct HomographyParams {
     std::array<float, 9> H0;     // K2 * R * K1^-1
     std::array<float, 9> K1inv;  // K1^-1
-    std::array<float, 3> e2;     // K2 * t
+    std::array<float, 3> e2;     // K2 * t    
 };
 
 // Plane-induced homography: H = K2 * (R + t * n^T / d) * K1^-1
 // p' ~ H0 * p + (K2 * t) * (n^T * K1^-1 * p) / d
-HomographyParams calcHomographyParams(const Camera& cam1, const Camera& cam2) {
+/*HomographyParams calcHomographyParams( // in case tx,ty,tz are camera centers, not translation vectors
+    const Camera& cam1,
+    const Camera& cam2)
+{
     cv::Mat K1 = cam1.intrinsics.camera_matrix;
     cv::Mat K2 = cam2.intrinsics.camera_matrix;
-    cv::Mat R = cam2.extrinsics.rotation * cam1.extrinsics.rotation.t();
-	cv::Mat t = cam2.extrinsics.translation - R * cam1.extrinsics.translation; // if t is NOT camera center
-	//cv::Mat t = cam2.extrinsics.rotation * (cam1.extrinsics.translation - cam2.extrinsics.translation); // if t is camera center
+
+    // RealityScan R assumed to be camera -> world.
+    cv::Mat R =
+        cam2.extrinsics.rotation *
+        cam1.extrinsics.rotation.t();
+
+    // RealityScan translation interpreted as camera center C
+    // in world coordinates.
+    cv::Mat C1 = cam1.extrinsics.translation;
+    cv::Mat C2 = cam2.extrinsics.translation;
+
+    // Relative translation expressed in camera 2 coordinates.
+    cv::Mat t =
+        cam2.extrinsics.rotation *
+        (C1 - C2);
 
     cv::Mat K1inv = K1.inv();
+
     cv::Mat H0 = K2 * R * K1inv;
-    cv::Mat e = K2 * t; // 3x1
+    cv::Mat e2 = K2 * t;
 
     HomographyParams params;
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            params.H0[i * 3 + j] = static_cast<float>(H0.at<double>(i, j));
-            params.K1inv[i * 3 + j] = static_cast<float>(K1inv.at<double>(i, j));
+
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+        {
+            params.H0[i * 3 + j] =
+                static_cast<float>(H0.at<double>(i, j));
+
+            params.K1inv[i * 3 + j] =
+                static_cast<float>(K1inv.at<double>(i, j));
         }
-        params.e2[i] = static_cast<float>(e.at<double>(i, 0));
+
+        params.e2[i] =
+            static_cast<float>(e2.at<double>(i, 0));
+    }
+
+    return params;
+}*/
+
+HomographyParams calcHomographyParams( // in case tx,ty,tz are translation vectors, not camera centers
+    const Camera& cam1,
+    const Camera& cam2)
+{
+    cv::Mat K1 = cam1.intrinsics.camera_matrix;
+    cv::Mat K2 = cam2.intrinsics.camera_matrix;
+
+    // Relative rotation: camera 1 -> camera 2.
+    cv::Mat R =
+        cam2.extrinsics.rotation *
+        cam1.extrinsics.rotation.t();
+
+    // RealityScan translation interpreted as the
+    // conventional OpenCV extrinsic t in:
+    //
+    // X_camera = R * X_world + t
+    //
+    cv::Mat t1 = cam1.extrinsics.translation;
+    cv::Mat t2 = cam2.extrinsics.translation;
+
+    // Relative translation.
+    cv::Mat t =
+        t2 - R * t1;
+
+    cv::Mat K1inv = K1.inv();
+
+    cv::Mat H0 = K2 * R * K1inv;
+    cv::Mat e2 = K2 * t;
+
+    HomographyParams params;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+        {
+            params.H0[i * 3 + j] =
+                static_cast<float>(H0.at<double>(i, j));
+
+            params.K1inv[i * 3 + j] =
+                static_cast<float>(K1inv.at<double>(i, j));
+        }
+
+        params.e2[i] =
+            static_cast<float>(e2.at<double>(i, 0));
     }
 
     return params;
@@ -195,9 +268,9 @@ int main() {
         const float BASE_DEPTH = static_cast<float>(f * cv::norm(dbgT) / 50.0); // f from camera 0
 
 		// Depth loop parameters (budda dataset: 0.005 to 0.5 * BASE_DEPTH, 500 steps)
-		const float DEPTH_MIN = BASE_DEPTH * 0.05f;  // depth min is actually disparity max (1/depth)
-		const float DEPTH_MAX = BASE_DEPTH * 0.5f;    // depth max is actually disparity min (1/depth)
-        const int DEPTH_STEPS = 10000;
+		const float DEPTH_MIN = BASE_DEPTH * 0.005f;  // depth min is actually disparity max (1/depth)
+		const float DEPTH_MAX = BASE_DEPTH * 5.5f;    // depth max is actually disparity min (1/depth)
+        const int DEPTH_STEPS = 1500;
 
         HomographyParams hp = calcHomographyParams(cameras[0], cameras[3]);
         processor.setCameraMatrices(hp.H0.data(), hp.K1inv.data(), hp.e2.data());
