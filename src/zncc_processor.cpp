@@ -9,8 +9,11 @@
 #include <stdexcept>
 #include <algorithm>
 
-constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid
-constexpr float pointScoreThreshold = 0.5f; // threshold for point score to consider a frontier point valid
+
+constexpr float znccThreshold = 0.85f; // threshold for ZNCC score to consider a hypothesis valid
+//constexpr float pointScoreThreshold = 0.5f; // threshold for point score to consider a frontier point valid
+constexpr bool induceDepthDevPenalty = true; // whether to apply depth deviation penalty in ZNCC evaluation
+constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change)
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
@@ -140,6 +143,11 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
                 }
             }
 
+            if (induceDepthDevPenalty) {
+                const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
+                bestScore = bestScore * depthDeviationPenalty;
+            }
+
             // If no valid score was found (all -inf/NaN), skip this frontier point
             if (!std::isfinite(bestScore) || bestScore < znccThreshold) {
                 continue;
@@ -190,7 +198,7 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
         cudaFree(depthStepsPtr);
         cudaFree(resultDev);
 
-		std::cout << "computeZNCC: Frontier points processed: " << frontierCount << ", valid results: " << packedResults.size() << std::endl;
+		//std::cout << "computeZNCC: Frontier points processed: " << frontierCount << ", valid results: " << packedResults.size() << std::endl;
 
         return packedResults;
     }
