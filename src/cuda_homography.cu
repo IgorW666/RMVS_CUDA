@@ -2,12 +2,15 @@
 #include <stdio.h>
 #include "../include/helper_math.h"
 
+
+// calculate the total size of constant memory used sometime
 __constant__ float H0[9];                         // K2 * R * K1^-1
 __constant__ float K1inv[9];                      // K1^-1
 __constant__ float e2[3];                         // K2 * t
 __constant__ int windowRadius;
-//__constant__ float normalPermutations[16][2];     // 16 permutations * 2 << or maybe it should. Depends on how the kernel will be used
 __constant__ NormalPermutation normalPermutations[16];
+__constant__ size_t refPitch;
+__constant__ size_t targetPitch;
 
 __device__
 inline float3 matmul3x3_point(const float* mat, float3 p) {
@@ -35,155 +38,88 @@ bool projectSample(float3 referencePoint, float depth, float3 normal, float2& xy
     xy = make_float2(p.x / p.z, p.y / p.z);
     return true;
 }
+// Catmull-Rom bicubic weights
+__device__
+inline void getBicubicWeights(float t, float* w) {
+    float t2 = t * t;
+    float t3 = t2 * t;
 
-/*bool projectSample2(float3 referencePoint, float planeOffset, float3 normal, float2& xy) {
-    float3 q = matmul3x3_point(K1inv, referencePoint);
-    float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / planeOffset;
-    float3 h = matmul3x3_point(H0, referencePoint);
-    float3 p = make_float3(
-        h.x + e2[0] * s,
-        h.y + e2[1] * s,
-        h.z + e2[2] * s
-    );
-    if (p.z <= 1e-6f)
-        return false;
-    xy = make_float2(p.x / p.z, p.y / p.z);
-    return true;
-}*/
+    w[0] = 0.5f * (-t3 + 2.0f * t2 - t);
+    w[1] = 0.5f * (3.0f * t3 - 5.0f * t2 + 2.0f);
+    w[2] = 0.5f * (-3.0f * t3 + 4.0f * t2 + t);
+    w[3] = 0.5f * (t3 - t2);
+}
 
+// Safely sample global memory with clamping at borders
+__device__
+inline float sampleClamp(const float* image, int width, int height, int x, int y, size_t pitch) {
+    x = max(0, min(x, width - 1));
+    y = max(0, min(y, height - 1));
+    const float* row = (const float*)((const char*)image + y * pitch);
+    return row[x];
+}
 
+__device__
+float interpolateTarget(const float* targetImg, int width, int height, float2 uv, size_t pitch) {
+    int ix = (int)floorf(uv.x);
+    int iy = (int)floorf(uv.y);
 
-/*__global__
-void evaluateZNCC(
-    const float* refImg,
-    const float* targetImg,
-    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
-    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
-    float* result,
-    int depthNSteps,
-    int normalNSteps,
-    int refWidth,
-    int refHeight,
-    int targetWidth,
-    int targetHeight)
-{
-    const int frontierIndex = blockIdx.x;
+    float fx = uv.x - (float)ix;
+    float fy = uv.y - (float)iy;
 
-    const int hypothesis = threadIdx.x;
+    float wx[4], wy[4];
+    getBicubicWeights(fx, wx);
+    getBicubicWeights(fy, wy);
 
-    const int depthIndex = hypothesis / normalNSteps;
+    float value = 0.0f;
 
-    const int normalIndex = hypothesis % normalNSteps;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        float rowValue = 0.0f;
+        int cy = iy + j - 1;
 
-    FrontierPoint parent = frontier[frontierIndex];
-
-    //const float depth = parent.depth * depthSteps[depthIndex];
-    const float depth = parent.depth + depthSteps[depthIndex];
-
-    const int refX = parent.x;
-    const int refY = parent.y;
-
-    //const float* normPermutation = normalPermutations[normalIndex];
-    NormalPermutation perm = normalPermutations[normalIndex];
-
-    float3 parentTangent;
-    float3 parentBitangent;
-    float3 reference;
-
-    if (abs(parent.normal.z) < 0.999f) {
-        reference = make_float3(0.0f, 0.0f, 1.0f);
-    } else {
-        reference = make_float3(0.0f, 1.0f, 0.0f);
-    }
-
-	// do I need so many normalization steps?
-    parentTangent = normalize(cross(reference, parent.normal));
-    parentBitangent = cross(parent.normal, parentTangent);
-
-    //float3 normVec = normalize(parent.normal
-    //       + normPermutation[0] * parentTangent
-    //       + normPermutation[1] * parentBitangent);
-
-    float3 normVec = normalize(parent.normal
-        + perm.tangent * parentTangent
-        + perm.bitangent * parentBitangent);
-
-	//normVec = parent.normal; // overwrite for testing
-
-    const int windowSize = 1 + 2 * windowRadius;
-
-    // Result layout:
-    //
-    // frontier
-    //     -> depth
-    //         -> normal
-    //             -> window Y
-    //                 -> window X
-    //                     -> {u, v}
-    //
-    // Each frontier point therefore gets its own complete result region.
-
-    {
-        printf(
-            "normal %d: perm=(%.7f, %.7f), "
-            "n=(%.7f, %.7f, %.7f)\n",
-            normalIndex,
-            perm.tangent,
-            perm.bitangent,
-            normVec.x,
-            normVec.y,
-            normVec.z
-        );
-    }
-
-    const int xStride = 2;
-
-    const int yStride = windowSize * xStride;
-
-    const int normalStride = windowSize * yStride;
-
-    const int depthStride = normalNSteps * normalStride;
-
-    const int frontierStride = depthNSteps * depthStride;
-
-    for (int winY = -windowRadius; winY <= windowRadius; ++winY)
-    {
-        const float refPtYf = static_cast<float>(refY + winY);
-
-        for (int winX = -windowRadius; winX <= windowRadius; ++winX)
-        {
-            const float refPtXf = static_cast<float>(refX + winX);
-
-            float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
-
-            float2 xy;
-
-            bool valid = projectSample(refPt, depth, normVec, xy);
-
-            const int winXIndex = winX + windowRadius;
-
-            const int winYIndex = winY + windowRadius;
-
-            const int resultIdx =
-                frontierIndex * frontierStride
-                + depthIndex * depthStride
-                + normalIndex * normalStride
-                + winYIndex * yStride
-                + winXIndex * xStride;
-
-            if (valid)
-            {
-                result[resultIdx + 0] = xy.x;
-                result[resultIdx + 1] = xy.y;
-            }
-            else
-            {
-                result[resultIdx + 0] = -1.f;
-                result[resultIdx + 1] = -1.f;
-            }
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            int cx = ix + i - 1;
+            rowValue += wx[i] * sampleClamp(targetImg, width, height, cx, cy, pitch);
         }
+
+        value += wy[j] * rowValue;
     }
-}*/
+
+    return value;
+}
+
+__device__
+void accumulateZNCC(float& sum_ref, float& sum_target,
+    float& sum_sq_ref, float& sum_sq_target,
+    float& sum_product, float ref_val, float target_val) {
+    sum_ref += ref_val;
+    sum_target += target_val;
+    sum_sq_ref += ref_val * ref_val;
+    sum_sq_target += target_val * target_val;
+    sum_product += ref_val * target_val;
+}
+
+// Zero-mean normalized cross-correlation
+__device__
+float finishZNCC(float sum_ref, float sum_target, float sum_sq_ref,
+    float sum_sq_target, float sum_product, int count) {
+    if (count == 0) return 0.0f;
+
+    float mean_ref = sum_ref / (float)count;
+    float mean_target = sum_target / (float)count;
+
+    float var_ref = sum_sq_ref / (float)count - mean_ref * mean_ref;
+    float var_target = sum_sq_target / (float)count - mean_target * mean_target;
+    float cov = sum_product / (float)count - mean_ref * mean_target;
+
+    var_ref = max(1e-6f, var_ref);
+    var_target = max(1e-6f, var_target);
+
+    float denom = sqrtf(var_ref * var_target);
+    return cov / denom;
+}
 
 __global__
 void evaluateZNCC(
@@ -297,14 +233,24 @@ void evaluateZNCC(
     const int depthStride = normalNSteps * normalStride;
 
     const int frontierStride = depthNSteps * depthStride;
+    
+    //
 
-    for (int winY = -windowRadius; winY <= windowRadius; ++winY)
+    float sum_ref = 0.0f;
+    float sum_target = 0.0f;
+    float sum_sq_ref = 0.0f;
+    float sum_sq_target = 0.0f;
+    float sum_product = 0.0f;
+
+    for (int winY = -windowRadius; winY <= windowRadius; ++winY)        
     {
-        const float refPtYf = static_cast<float>(refY + winY);
+		const int py = refY + winY;
+        const float refPtYf = static_cast<float>(py);
 
         for (int winX = -windowRadius; winX <= windowRadius; ++winX)
         {
-            const float refPtXf = static_cast<float>(refX + winX);
+			const int px = refX + winX;
+            const float refPtXf = static_cast<float>(px);
 
             float3 refPt = make_float3(refPtXf, refPtYf, 1.0f);
 
@@ -323,18 +269,19 @@ void evaluateZNCC(
                 + winYIndex * yStride
                 + winXIndex * xStride;
 
-            if (valid)
-            {
-                result[resultIdx + 0] = xy.x;
-                result[resultIdx + 1] = xy.y;
-            }
-            else
-            {
-                result[resultIdx + 0] = -1.f;
-                result[resultIdx + 1] = -1.f;
-            }
+			float2 uv = valid ? make_float2(xy.x, xy.y) : make_float2(-1.f, -1.f);
+
+            float* refRow = (float*)((char*)refImg + py * refPitch);
+            float ref_val = refRow[px];
+			
+            float target_val = interpolateTarget(targetImg, targetWidth, targetHeight, uv, targetPitch);
+
+            accumulateZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, ref_val, target_val);
+
         }
     }
+
+	float zncc = finishZNCC(sum_ref, sum_target, sum_sq_ref, sum_sq_target, sum_product, windowSize * windowSize);
 }
 
 
@@ -373,11 +320,6 @@ void setupCameraMatrices(const float* h0_host, const float* k1inv_host, const fl
     checkCudaError("setupCameraMatrices"); // handy!
 }
 
-//void setupNormalPermutations(const NormalPermutation* normalPermutations_host, int count) {
-//    cudaMemcpyToSymbol(normalPermutations, normalPermutations_host, count * 2 * sizeof(float)); // 9? Normal permutation has only 2 values
-//    checkCudaError("setupNormalPermutations");
-//}
-
 void setupNormalPermutations(const NormalPermutation* normalPermutations_host, int count) {
     // safety: ensure we don't overrun device constant array
     const int maxPerms = static_cast<int>(sizeof(normalPermutations) / sizeof(normalPermutations[0]));
@@ -393,6 +335,13 @@ void setupNormalPermutations(const NormalPermutation* normalPermutations_host, i
 void setWindowRadius(int radius) {
     cudaMemcpyToSymbol(windowRadius, &radius, sizeof(int));
     checkCudaError("setWindowRadius");
+}
+
+// host helper to set image pitches in device constant memory
+void setImagePitches(size_t refPitch_host, size_t targetPitch_host) {
+    cudaMemcpyToSymbol(refPitch, &refPitch_host, sizeof(size_t));
+    cudaMemcpyToSymbol(targetPitch, &targetPitch_host, sizeof(size_t));
+    checkCudaError("setImagePitches");
 }
 
 void checkCudaError(const char* message) {

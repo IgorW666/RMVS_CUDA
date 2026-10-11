@@ -3,14 +3,6 @@
 #include <cuda_runtime.h>
 #include "types.h"
 
-/*struct FrontierPoint // moved to types.h
-{
-    int x;
-    int y;
-    float depth;   // from neighbor parent
-    float3 normal; // from neighbor parent
-};*/
-
 /**
  * Evaluates ZNCC (Zero-mean Normalized Cross-Correlation) for depth map
  * using plane-induced homography and bicubic interpolation.
@@ -57,7 +49,6 @@ void evaluateZNCC(const float* refImg,
  */
 void setupCameraMatrices(const float* h0_host, const float* k1inv_host, const float* e2_host);
 
-
 void setupNormalPermutations(const NormalPermutation* normalPermutations, int count);
 
 /**
@@ -66,6 +57,16 @@ void setupNormalPermutations(const NormalPermutation* normalPermutations, int co
  * @param radius    Window radius in pixels (e.g., 8 for 17x17 window)
  */
 void setWindowRadius(int radius);
+
+/**
+ * Set image row-pitches (size_t) in device constant memory.
+ * Call this from host after creating / uploading device images.
+ *
+ * @param refPitch_host    pitch (bytes) of the reference image rows on device
+ * @param targetPitch_host pitch (bytes) of the target image rows on device
+ */
+void setImagePitches(size_t refPitch_host, size_t targetPitch_host);
+
 
 /**
  * Checks for CUDA errors and prints diagnostic information.

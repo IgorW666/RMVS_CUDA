@@ -7,6 +7,7 @@
 ImageHandler::~ImageHandler() {
     // Cleanup handled by individual image free calls
 }
+
 ImageData ImageHandler::loadImageToGPU(const std::string& filename) {
     // Load image with OpenCV (grayscale)
     cv::Mat cpuImage = cv::imread(filename, cv::IMREAD_GRAYSCALE);

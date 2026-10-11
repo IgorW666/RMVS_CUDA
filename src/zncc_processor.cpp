@@ -36,24 +36,30 @@ ImageData ZNCCProcessor::computeZNCC(
     int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/ ) {
 
     const int frontierCount = static_cast<int>(frontierPoints.size());
-
+    
+    // add a helper for that in the future
     FrontierPoint* frontierPtr = nullptr;
-	cudaMalloc((void**)&frontierPtr, frontierCount * sizeof(FrontierPoint)); // contiguous
+    cudaMalloc((void**)&frontierPtr, frontierCount * sizeof(FrontierPoint)); // contiguous
     cudaMemcpy(frontierPtr, frontierPoints.data(), frontierCount * sizeof(FrontierPoint), cudaMemcpyHostToDevice);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         throw std::runtime_error(std::string("GPU copy failed: ") + cudaGetErrorString(err));
     }
 
-	float* depthStepsPtr = nullptr;
-	const int depthCount = static_cast<int>(depthSteps.size());
-	cudaMalloc((void**)&depthStepsPtr, depthCount * sizeof(float));
-	cudaMemcpy(depthStepsPtr, depthSteps.data(), depthCount * sizeof(float), cudaMemcpyHostToDevice);
+    // add a helper for that in the future
+    float* depthStepsPtr = nullptr;
+    const int depthCount = static_cast<int>(depthSteps.size());
+    cudaMalloc((void**)&depthStepsPtr, depthCount * sizeof(float));
+    cudaMemcpy(depthStepsPtr, depthSteps.data(), depthCount * sizeof(float), cudaMemcpyHostToDevice);
+    
+    setImagePitches(refImage.pitch, targetImage.pitch);
 
 	// compute expected result size (floats)
     const int windowSize = 1 + 2 * windowRadius;
 	const int resultFloatsPerFrontier = depthCount * normalNSteps * windowSize * windowSize * 2;
 	const int resultFloatsTotal = frontierCount * resultFloatsPerFrontier;
+	
+	
 
 	float* result = nullptr;
 	cudaMalloc((void**)&result, resultFloatsTotal * sizeof(float));
@@ -71,7 +77,7 @@ ImageData ZNCCProcessor::computeZNCC(
         refImage.height,
         targetImage.width,
 		targetImage.height,
-        frontierCount); // <-- pass frontier count
+        frontierCount);
 
     checkCudaError("computeZNCC kernel launch");
 

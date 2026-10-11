@@ -78,8 +78,6 @@ public:
             return;
         }
 
-        //out << totalPoints << "\n";
-        //out << "Normal permutations exported by NormalPermutationGenerator\n";
         out << std::fixed << std::setprecision(6);
 
         for (const auto& perm : permutations) {

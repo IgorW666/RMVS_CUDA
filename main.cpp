@@ -11,7 +11,7 @@
 #include <fstream>
 #include <cmath>
 
-const int WINDOW_RADIUS = 2; // window size will be 2 * WINDOW_RADIUS + 1
+const int WINDOW_RADIUS = 4; // window size will be 2 * WINDOW_RADIUS + 1
 const int DEPTH_STEPS = 16;
 
 struct HomographyParams {
@@ -94,7 +94,7 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
 
 int main() {
     //try {
-	    const float coneAngleDegrees = 15.0f;
+	    const float coneAngleDegrees = 30.0f;
 		NormalPermutationGenerator normalPermGen(16);
 		std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(coneAngleDegrees, true);      
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", coneAngleDegrees);
@@ -124,12 +124,12 @@ int main() {
 
 		//FrontierPoint frontierPoint1 = {IMG_WIDTH / 2, IMG_HEIGHT / 2, 1.f, {0.0f, 0.0f, 1.0f}}; // 20.f for calcHomographyParams1
         //FrontierPoint frontierPoint2 = { IMG_WIDTH / 2 + 10, IMG_HEIGHT / 2, 20.f, {0.0f, 0.0f, 1.0f} };
-		int fp3x = 1079; // 2079, 1145
+		int fp3x = 1079;
 		int fp3y = 2084;
 		float fp3depth = depthMap0.at<float>(fp3y, fp3x); // 20.f for calcHomographyParams1
         FrontierPoint frontierPoint3 = { fp3x, fp3y, fp3depth, {0.f,0.f,1.f} };
 
-		std::vector<float> depthSteps = generateDepthSteps(0.01f, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
+		std::vector<float> depthSteps = generateDepthSteps(10.0f, DEPTH_STEPS); // 0.01 for calcHomographyParams1 , 
 
 		std::vector<FrontierPoint> frontierPoints = { frontierPoint3 };
 
