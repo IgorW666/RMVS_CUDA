@@ -17,9 +17,9 @@ const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
 const int WINDOW_RADIUS = 3;
 const int DEPTH_STEPS = 16;
-const float CONE_ANGLE_DEGREES = 3.0f;
-const float DEPTH_STEP_SIZE = 0.005f;
-const float BEST_CAMERA_ANGLE_DEGREES = 5.0f; 
+const float CONE_ANGLE_DEGREES = 5.0f;
+const float DEPTH_STEP_SIZE = 0.01f;
+const float BEST_CAMERA_ANGLE_DEGREES = 30.0f; 
 
 // move to types.h
 struct HomographyParams {
@@ -45,14 +45,13 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
-	std::string folderPath = "data\\budda2\\"; 
+	std::string folderPath = "data\\buddaFull\\"; 
 
     std::vector<Camera> cameras;
 
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\budda2\\budda.csv");
-        //cameras = cameraLoader.loadFromCSV("data\\stat\\stat.csv");
+        cameras = cameraLoader.loadFromCSV("data\\buddaFull\\budda.csv");        
     }
 
 	std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);	
@@ -74,7 +73,7 @@ int main() {
         float avgDepth = 0.0f; // stat 38.11, 142.32
 
         CloudLoader cloudLoader; // make static !
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\buddaFull\\budda.xyz", cameras[bestCameraPair.first], refImage, avgDepth);
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
@@ -182,7 +181,7 @@ int main() {
         cv::destroyAllWindows();
         depthMapInit = depthMap;
 
-        std::string pointCloudFilename = "cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(DEPTH_STEP_SIZE) + ".xyz";
+        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(CONE_ANGLE_DEGREES) + "_dss" + std::to_string(DEPTH_STEP_SIZE) + ".xyz";
 
         saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[bestCameraPair.first]);
 
@@ -355,7 +354,7 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
     return depthSteps;
 }
 
-std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
+/*std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
     for (int i = 0; i < cameras.size(); ++i) {
         for (int j = i + 1; j < cameras.size(); ++j) {
@@ -367,13 +366,52 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
         }
     }
     return cameraAngle;
+}*/
+
+std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
+    // Compute angle between camera optical axes (baseline angle = angle between viewing directions).
+    // For extrinsics given as X_cam = R * X_world + t, the camera center is C = -R.t() * t,
+    // and the camera forward (optical) direction in world coords is dir = R.t() * (0,0,1).
+    std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
+    const cv::Mat z = (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
+
+    const int n = static_cast<int>(cameras.size());
+    for (int i = 0; i < n; ++i) {
+        const cv::Mat R1 = cameras[i].extrinsics.rotation;
+        cv::Mat dir1 = R1.t() * z;
+        double n1 = cv::norm(dir1);
+        for (int j = i + 1; j < n; ++j) {
+            const cv::Mat R2 = cameras[j].extrinsics.rotation;
+            cv::Mat dir2 = R2.t() * z;
+            double n2 = cv::norm(dir2);
+
+            double cosang = 0.0;
+            if (n1 > 1e-12 && n2 > 1e-12) {
+                cosang = (dir1.dot(dir2)) / (n1 * n2);
+            }
+            // clamp numeric errors
+            cosang = std::max(-1.0, std::min(1.0, cosang));
+            float angleDeg = static_cast<float>(std::acos(cosang) * 180.0 / CV_PI);
+
+            cameraAngle[i][j] = angleDeg;
+            cameraAngle[j][i] = angleDeg; // symmetric
+        }
+    }
+    return cameraAngle;
 }
 
-std::pair<int, int> findBestCameraPair(const int refCamIdx,const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+// Replace existing findBestCameraPair implementation with this safe version
+std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+    auto it = cameraAngle.find(refCamIdx);
+    if (it == cameraAngle.end() || it->second.empty()) {
+        // no precomputed angles for this reference camera
+        return { refCamIdx, -1 };
+    }
+
     float bestDiff = std::numeric_limits<float>::max();
     int cam1 = refCamIdx;
-    std::pair<int, int> bestPair(refCamIdx, -1);    
-    for (const auto& kv2 : cameraAngle.at(refCamIdx)) {
+    std::pair<int, int> bestPair(refCamIdx, -1);
+    for (const auto& kv2 : it->second) {
         int cam2 = kv2.first;
         float angle = kv2.second;
         float diff = std::abs(angle - bestCameraAngleDegrees);
