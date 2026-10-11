@@ -21,8 +21,8 @@
         CloudLoader(const CloudLoader&) = delete;
         CloudLoader& operator=(const CloudLoader&) = delete;
 
-        cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData);
-        cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height);
+        cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData, float& avgDepth);
+        cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height, float& avgDepth);
 
     private:
         void projectPointAndUpdateDepth(const cv::Mat& Kd, const cv::Mat& R, const cv::Mat& t,

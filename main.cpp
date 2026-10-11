@@ -11,13 +11,15 @@
 #include <fstream>
 #include <cmath>
 #include <cstdio> // for snprintf
+#include <unordered_map>
 
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;
-const int WINDOW_RADIUS = 3;
+const int WINDOW_RADIUS = 1;
 const int DEPTH_STEPS = 16;
-const float CONE_ANGLE_DEGREES = 2.0f;
+const float CONE_ANGLE_DEGREES = 5.0f;
 const float DEPTH_STEP_SIZE = 0.005f;
+const float BEST_CAMERA_ANGLE_DEGREES = 30.0f; 
 
 // move to types.h
 struct HomographyParams {
@@ -31,6 +33,8 @@ HomographyParams calcHomographyParams2(const Camera& cam1, const Camera& cam2);
 void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam);
 void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap);
 std::vector<float> generateDepthSteps(float interval, int steps);
+std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras);
+std::pair<int, int> findBestCameraPair(const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
 
 int main() {
 
@@ -41,25 +45,36 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
+	std::string folderPath = "data\\budda2"; 
+
     std::vector<Camera> cameras;
 
     {
         CameraLoader cameraLoader;
         cameras = cameraLoader.loadFromCSV("data\\budda2\\budda.csv");
+        //cameras = cameraLoader.loadFromCSV("data\\stat\\stat.csv");
     }
+
+	std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
+	std::pair<int, int> bestCameraPair = findBestCameraPair(cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
 
     ImageHandler imageHandler;
 
     ImageData refImage = imageHandler.loadImageToGPU("data\\budda2\\img\\41455.png"); // idx 0
     ImageData targetImage = imageHandler.loadImageToGPU("data\\budda2\\img\\41456.png"); // idx 1
 
+    //ImageData refImage = imageHandler.loadImageToGPU("data\\stat\\img\\DSC_0490.png"); // idx 0
+    //ImageData targetImage = imageHandler.loadImageToGPU("data\\stat\\img\\DSC_0493.png"); // idx 1 "D:\REPOS\CPP\MOJE\CudaExmaples\homography_interpolation_zncc_homogrpahy_isolated\homography_interpolation_zncc\data\stat\img\DSC_0490.png"
+
+    float avgDepth = 0.0f; // stat 38.11, 142.32
+
     CloudLoader cloudLoader; // make static !
-    cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[1], refImage);
+    cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\stat\\stat.xyz", cameras[0], refImage, avgDepth);
 
     const int IMG_WIDTH = refImage.width;
     const int IMG_HEIGHT = refImage.height;
 
-    const double progressImageScale = 0.25; // will have to calculate this from screen resolution and image resolution
+    const double progressImageScale = 0.125; // will have to calculate this from screen resolution and image resolution
 
     ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
@@ -330,4 +345,36 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
         depthSteps[i] = (startIdx + i) * interval; // ooor I could make it into disparity here
     }
     return depthSteps;
+}
+
+std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
+    std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
+    for (int i = 0; i < cameras.size(); ++i) {
+        for (int j = i + 1; j < cameras.size(); ++j) {
+            cv::Mat t1 = cameras[i].extrinsics.translation;
+            cv::Mat t2 = cameras[j].extrinsics.translation;
+			float angle = std::acos(t1.dot(t2) / (cv::norm(t1) * cv::norm(t2))) * 180.0f / CV_PI; // angle in degrees
+            cameraAngle[i][j] = angle;
+            cameraAngle[j][i] = angle; // symmetric
+        }
+    }
+    return cameraAngle;
+}
+
+std::pair<int, int> findBestCameraPair(const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+    float bestDiff = std::numeric_limits<float>::max();
+    std::pair<int, int> bestPair(-1, -1);
+    for (const auto& kv1 : cameraAngle) {
+        int cam1 = kv1.first;
+        for (const auto& kv2 : kv1.second) {
+            int cam2 = kv2.first;
+            float angle = kv2.second;
+            float diff = std::abs(angle - bestCameraAngleDegrees);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestPair = { cam1, cam2 };
+            }
+        }
+    }
+    return bestPair;
 }

@@ -6,17 +6,19 @@
 #include <limits>
 #include <cmath>
 
-cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData) {
-    return loadXYZToDepthMap(filename, cam, imageData.width, imageData.height);
+cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData, float& avgDepth) {
+    return loadXYZToDepthMap(filename, cam, imageData.width, imageData.height, avgDepth);
 }
 
-cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height) {
+cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height, float& avgDepth) {
     if (width <= 0 || height <= 0) {
         throw std::invalid_argument("width and height must be positive");
     }
 
     std::vector<float> depthBuffer(static_cast<size_t>(width) * static_cast<size_t>(height),
         std::numeric_limits<float>::infinity());
+
+	avgDepth = 0.0f;
 
     // Prepare intrinsics and extrinsics once (converted to CV_64F)
     cv::Mat Kd;
@@ -56,13 +58,21 @@ cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera
     // Convert depthBuffer to cv::Mat (CV_32FC1); set empty (inf) -> 0.0f
     cv::Mat depthMap(height, width, CV_32FC1);
     size_t idx = 0;
+    float depthSum = 0.0f;
+    size_t depthCount = 0;
     for (int r = 0; r < height; ++r) {
         float* rowPtr = depthMap.ptr<float>(r);
         for (int c = 0; c < width; ++c, ++idx) {
             float d = depthBuffer[idx];
             rowPtr[c] = std::isfinite(d) ? d : 0.0f;
+            if (std::isfinite(d)) {
+                depthSum += d;
+                ++depthCount;
+            }
         }
     }
+
+	avgDepth = (depthCount > 0) ? (depthSum / static_cast<float>(depthCount)) : 0.0f;
 
     return depthMap;
 }
