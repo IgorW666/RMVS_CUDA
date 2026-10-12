@@ -3,14 +3,16 @@
 #include "include/camera_loader.h"
 #include "include/normal_permutation_generator.h"
 #include "include/cloud_loader.h"
-#include <iostream>
+
 #include <opencv2/opencv.hpp>
+
+#include <iostream>
 #include <array>
 #include <iomanip>
 #include <sstream>
 #include <fstream>
 #include <cmath>
-#include <cstdio> // for snprintf
+#include <cstdio>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -21,16 +23,23 @@ const int DEPTH_STEPS = 16;                     // originally 16. Can be increas
 const int NORMAL_PERMUTATIONS = 16;             // 
 const float CONE_ANGLE_DEGREES = 4.0f;          // 5.f this has to change. I need more then 1 angle permutation
 const float DEPTH_STEP_SIZE = 0.005f;           // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
-const float BEST_CAMERA_ANGLE_DEGREES = 25.0f;  // dont know yet. in theory this should be 25-30deg
+const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg
 
 // move helpers to another file
-HomographyParams calcHomographyParams2(const Camera& cam1, const Camera& cam2);
+HomographyParams calcHomographyParamsW2C(const Camera& cam1, const Camera& cam2);
 void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam);
 void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap);
 std::vector<float> generateDepthSteps(float interval, int steps);
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras);
 std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
 std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
+
+// TODO:
+// - add color to dense point clouds
+// - add more anlgles to normal permutations
+// - add normal vector dot product during propagation to filter out "impossible" normals
+// - try different zncc aggregation methods
+// - switch to disparity?
 
 int main() {
 
@@ -53,44 +62,19 @@ int main() {
 
     for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
 
-        // Find best cameras by baseline angle
-        auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
-        //auto bestCameraPair = findBestCameraPair(refCamIdx, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+        auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);       
 
-        std::cout << "Reference Camera: " << refCamIdx << ", Best Cameras:";
-        for (int camIdx : bestCameras) {
-            std::cout << " " << camIdx;
-        }
-        std::cout << std::endl;
-
-        // Ensure we have two target indices; fall back conservatively to existing pair if needed.
         int targetIdx0 = -1;
         int targetIdx1 = -1;
+
         if (bestCameras.size() >= 2) {
             targetIdx0 = bestCameras[0];
             targetIdx1 = bestCameras[1];
         }
-        else {
-			//throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx));
-			continue; // this has to be fixed, findBestCamerasByAngle is not working properly, it should find 2 cameras that are closest to the given angle
+        else {            
+			throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx)); // selection is fixed, this should never happen again
         }
-        //else if (bestCameras.size() == 1) {
-        //   targetIdx0 = bestCameras[0];
-        //    targetIdx1 = bestCameraPair.second >= 0 ? bestCameraPair.second : bestCameras[0];
-        //}
-        //else {
-        //    // fallback: use bestCameraPair.second twice (keeps backwards compatibility)
-        //    targetIdx0 = bestCameraPair.second;
-        //    targetIdx1 = bestCameraPair.second;
-        //}
-
-        // If either target index is invalid, skip this reference camera
-        if (targetIdx0 < 0 || targetIdx0 >= static_cast<int>(cameras.size()) ||
-            targetIdx1 < 0 || targetIdx1 >= static_cast<int>(cameras.size())) {
-            std::cerr << "Invalid target camera indices for reference " << refCamIdx << ". Skipping.\n";
-            continue;
-        }
-
+        
         const std::string refImgName = cameras[refCamIdx].name;
         const std::string refImgPth = folderPath + "img\\" + refImgName;
         ImageData refImage = imageHandler.loadImageToGPU(refImgPth);
@@ -102,11 +86,10 @@ int main() {
 
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
-        // Use the same source camera as before for initial depth projection
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[refCamIdx], refImage, avgDepth);
+        
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
 
-        //float calculatedDepthStepSize = avgDepth * DEPTH_STEP_SIZE;
-		float calculatedDepthStepSize = DEPTH_STEP_SIZE;
+		float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
@@ -116,22 +99,21 @@ int main() {
 
         std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
 
-        // Prepare homographies for both targets and upload to device constants
-        HomographyParams hp0 = calcHomographyParams2(cameras[refCamIdx], cameras[targetIdx0]);
-        HomographyParams hp1 = calcHomographyParams2(cameras[refCamIdx], cameras[targetIdx1]);
+        HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
+        HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
 
         processor.setCameraMatrices(hp0.H0.data(), hp0.K1inv.data(), hp0.e2.data());
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
 
         processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
-        // Prepare working depth/normal/visited maps
         cv::Mat depthMap = depthMapInit.clone();
         cv::Mat normalMap = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_32FC3);
         cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
-        frontierPoints.reserve(1024);              // calculate from last frontier size
+		frontierPoints.reserve(1024); // add calculation from last frontier size / 2 or something like that
+
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
                 float d = depthMap.at<float>(y, x);
@@ -159,7 +141,6 @@ int main() {
                 depthMap.setTo(0.f);
             }
 
-            // Run dual-target ZNCC kernel returning consensus results agreed by both targets
             std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
                 refImage,
                 targetImage0,
@@ -173,7 +154,7 @@ int main() {
                 break;
             }
 
-            // Update depth map, normal map and visited mask
+            // update depth map, normal map and visited mask << there is some logic potential here like revisiting points with low score
             for (const auto& rp : results) {
                 if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
                     depthMap.at<float>(rp.y, rp.x) = rp.depth;
@@ -182,7 +163,7 @@ int main() {
                 }
             }
 
-            // Build next frontier
+            // build next frontier
             std::vector<FrontierPoint> nextFrontier;
             nextFrontier.reserve(results.size() * 8);
             for (const auto& rp : results) {
@@ -238,7 +219,7 @@ int main() {
     return 0;
 }
 
-HomographyParams calcHomographyParams2(
+HomographyParams calcHomographyParamsW2C( // finally...
     const Camera& cam1,
     const Camera& cam2) {
 
@@ -346,22 +327,18 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
     out.close();
 }
 
-// Save normal map as a 3-channel PNG for visualization. Valid pixels are taken from depthMap mask.
 void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap)
 {
     if (normalMap.empty() || depthMap.empty()) {
         std::cerr << "Normal map or depth map is empty, cannot save PNG.\n";
         return;
     }
-    cv::Mat vis;
-    // Map normals from [-1,1] to [0,255]
+    cv::Mat vis;    
     normalMap.convertTo(vis, CV_32F);
-    vis = (vis * 0.5f) + 0.5f; // now in [0,1] (assumes normals roughly in [-1,1])
+    vis = (vis * 0.5f) + 0.5f;
     vis *= 255.0f;
     cv::Mat vis8;
     vis.convertTo(vis8, CV_8UC3);
-
-    // Zero-out pixels where depth <= 0 to indicate invalid areas
     for (int y = 0; y < depthMap.rows; ++y) {
         const float* dptr = depthMap.ptr<float>(y);
         uchar* vptr = vis8.ptr<uchar>(y);
@@ -373,7 +350,6 @@ void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, con
             }
         }
     }
-
     if (!cv::imwrite(filename, vis8)) {
         std::cerr << "Failed to write normal PNG: " << filename << "\n";
     }
@@ -388,13 +364,9 @@ std::vector<float> generateDepthSteps(float interval, int steps) { // its gonna 
     return depthSteps;
 }
 
-std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {
-    // Compute angle between camera optical axes (baseline angle = angle between viewing directions).
-    // For extrinsics given as X_cam = R * X_world + t, the camera center is C = -R.t() * t,
-    // and the camera forward (optical) direction in world coords is dir = R.t() * (0,0,1).
+std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras) {    
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle;
     const cv::Mat z = (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
-
     const int n = static_cast<int>(cameras.size());
     for (int i = 0; i < n; ++i) {
         const cv::Mat R1 = cameras[i].extrinsics.rotation;
@@ -404,24 +376,20 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
             const cv::Mat R2 = cameras[j].extrinsics.rotation;
             cv::Mat dir2 = R2.t() * z;
             double n2 = cv::norm(dir2);
-
             double cosang = 0.0;
             if (n1 > 1e-12 && n2 > 1e-12) {
                 cosang = (dir1.dot(dir2)) / (n1 * n2);
-            }
-            // clamp numeric errors
+            }            
             cosang = std::max(-1.0, std::min(1.0, cosang));
             float angleDeg = static_cast<float>(std::acos(cosang) * 180.0 / CV_PI);
-
             cameraAngle[i][j] = angleDeg;
-            cameraAngle[j][i] = angleDeg; // symmetric
+            cameraAngle[j][i] = angleDeg;
         }
     }
     return cameraAngle;
 }
 
-// Replace existing findBestCameraPair implementation with this safe version
-std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
+/*std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     auto it = cameraAngle.find(refCamIdx);
     if (it == cameraAngle.end() || it->second.empty()) {
         // no precomputed angles for this reference camera
@@ -441,8 +409,7 @@ std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered
         }
     }
     return bestPair;
-}
-
+}*/
 
 /*std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     std::vector<int> bestCameras;

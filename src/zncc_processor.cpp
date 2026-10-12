@@ -139,6 +139,10 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
                     float score = resultHost[depthBase + n];
                     // skip NaNs
                     if (std::isnan(score)) continue;
+
+                    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[d]);
+					score *= depthDeviationPenalty;
+
                     if (score > bestScore) {
                         bestScore = score;
                         bestDepthIdx = d;
@@ -147,10 +151,11 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCC(
                 }
             }
 
-            if (induceDepthDevPenalty) {
-                const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
-                bestScore = bestScore * depthDeviationPenalty;
-            }
+			// it shouldnt be here, it has to be calculated for all the hypotheses
+            //if (induceDepthDevPenalty) { 
+            //    const float depthDeviationPenalty = 1.f - depthDevPenaltyStrength * std::abs(depthSteps[bestDepthIdx]);
+            //    bestScore = bestScore * depthDeviationPenalty;
+            //}
 
             // If no valid score was found (all -inf/NaN), skip this frontier point
             if (!std::isfinite(bestScore) || bestScore < znccThreshold) {
