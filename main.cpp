@@ -17,13 +17,13 @@
 #include <unordered_set>
 
 const bool SAVE_DEBUG_DATA = false;
-const bool REMOVE_SFM_POINTS = true;            // keep that off
+const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16. Can be increased but not sure if it changes anything yet
 const int NORMAL_PERMUTATIONS = 16;             // 
 const float CONE_ANGLE_DEGREES = 4.0f;          // 5.f this has to change. I need more then 1 angle permutation
-const float DEPTH_STEP_SIZE = 0.005f;           // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
-const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg
+const float DEPTH_STEP_SIZE = 0.1f;           // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 
 // move helpers to another file
 HomographyParams calcHomographyParamsW2C(const Camera& cam1, const Camera& cam2);
@@ -31,8 +31,8 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
 void saveNormalMapPng(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap);
 std::vector<float> generateDepthSteps(float interval, int steps);
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras);
-std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
-std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
+//std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees);
+std::vector<int> findBestCamerasByAngleGaussian(const int& refCamIdx, const int& NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, const float& bestCameraAngleDegrees);
 
 // TODO:
 // - add color to dense point clouds
@@ -40,6 +40,7 @@ std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, co
 // - add normal vector dot product during propagation to filter out "impossible" normals
 // - try different zncc aggregation methods
 // - switch to disparity?
+// - find the pdf with "chessboard pattern propagation" or "red-black" !!! (gipuma?)
 
 int main() {
 
@@ -50,11 +51,11 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
     }
 
-    std::string folderPath = "data\\budda2\\";
+    std::string folderPath = "data\\dFountain\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\budda2\\budda.csv");
+        cameras = cameraLoader.loadFromCSV("data\\dFountain\\fountain.csv");
     }
 
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
@@ -62,7 +63,8 @@ int main() {
 
     for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
 
-        auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);       
+        //auto bestCameras = findBestCamerasByAngle(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);       
+        auto bestCameras = findBestCamerasByAngleGaussian(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
 
         int targetIdx0 = -1;
         int targetIdx1 = -1;
@@ -87,9 +89,46 @@ int main() {
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
         
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\budda2\\budda.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\dFountain\\fountain.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
 
 		float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
+
+        // If we have a valid avgDepth we can convert a desired subpixel disparity to a depth step:
+        // ΔZ ≈ (Z^2 / (f * B)) * Δd
+        // where Z = avgDepth, f = focal (pixels), B = baseline (same units as camera translations).
+        if (avgDepth > 0.0f) {
+            // choose target camera to estimate baseline (use first target)
+            const Camera& camRef = cameras[refCamIdx];
+            const Camera& camTgt = cameras[targetIdx0];
+
+            // compute relative translation (same formula as in calcHomographyParamsW2C)
+            cv::Mat R1 = camRef.extrinsics.rotation;
+            cv::Mat R2 = camTgt.extrinsics.rotation;
+            cv::Mat t1 = camRef.extrinsics.translation;
+            cv::Mat t2 = camTgt.extrinsics.translation;
+            cv::Mat R_rel = R2 * R1.t();
+            cv::Mat t_rel = t2 - R_rel * t1;
+
+            double baseline = cv::norm(t_rel); // magnitude of translation between cameras
+            double f = camRef.intrinsics.camera_matrix.at<double>(0, 0); // focal in px
+
+            const double eps = 1e-6;
+            if (baseline > eps && f > eps) {
+                // choose desired disparity step in pixels (0.5..1.0 is reasonable; smaller => more precise but slower)
+                const double desiredDisparityPx = 2.0;
+                calculatedDepthStepSize = static_cast<float>((avgDepth * avgDepth) / (f * baseline) * desiredDisparityPx);
+            }
+            else {
+                // fallback: use multiplicative (log) step around avgDepth -> convert relative factor to absolute step
+                const float relativeFactor = 0.02f; // 2% of depth
+                calculatedDepthStepSize = avgDepth * relativeFactor;
+            }
+
+            // clamp to a reasonable range to avoid extremes
+            const float minStep = 1e-4f;
+            const float maxStep = std::max(0.1f, avgDepth * 0.5f);
+            calculatedDepthStepSize = std::max(minStep, std::min(calculatedDepthStepSize, maxStep));
+        }
 
         const int IMG_WIDTH = refImage.width;
         const int IMG_HEIGHT = refImage.height;
@@ -389,48 +428,7 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
     return cameraAngle;
 }
 
-/*std::pair<int, int> findBestCameraPair(const int refCamIdx, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
-    auto it = cameraAngle.find(refCamIdx);
-    if (it == cameraAngle.end() || it->second.empty()) {
-        // no precomputed angles for this reference camera
-        return { refCamIdx, -1 };
-    }
-
-    float bestDiff = std::numeric_limits<float>::max();
-    int cam1 = refCamIdx;
-    std::pair<int, int> bestPair(refCamIdx, -1);
-    for (const auto& kv2 : it->second) {
-        int cam2 = kv2.first;
-        float angle = kv2.second;
-        float diff = std::abs(angle - bestCameraAngleDegrees);
-        if (diff < bestDiff) {
-            bestDiff = diff;
-            bestPair = { cam1, cam2 };
-        }
-    }
-    return bestPair;
-}*/
-
-/*std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
-    std::vector<int> bestCameras;
-    auto it = cameraAngle.find(refCamIdx);
-    if (it == cameraAngle.end() || it->second.empty()) {
-        return bestCameras; // empty
-    }
-    for (const auto& kv2 : it->second) {
-        int cam2 = kv2.first;
-        float angle = kv2.second;
-        float diff = std::abs(angle - bestCameraAngleDegrees);
-        if (diff < 5.0f) { // within 5 degrees of the target angle
-            bestCameras.push_back(cam2);
-            if (static_cast<int>(bestCameras.size()) >= NCams) {
-                break; // limit to NCams
-            }
-        }
-    }
-    return bestCameras;
-}*/
-
+/*
 std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, float bestCameraAngleDegrees) {
     std::vector<std::pair<float, int>> candidates;
 
@@ -502,4 +500,42 @@ std::vector<int> findBestCamerasByAngle(const int refCamIdx, const int NCams, co
     }
 
     return bestCameras;
+}*/
+
+std::vector<int> findBestCamerasByAngleGaussian( // don't really need gaussian distribution for angles only but hopefully there will be more params in the future
+    const int& refCamIdx,
+    const int& NCams,
+    const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle,
+    const float& bestCameraAngleDegrees) {
+    
+    int allTCams = cameraAngle.at(refCamIdx).size();
+
+    if (allTCams < NCams) throw("not enough tcams to satisfy request");
+
+	std::vector<std::pair<float, int>> candidates; // score, camIdx
+    candidates.reserve(allTCams);
+
+    // score with gaussian distribution:
+	// score = exp(-(camAngle - bestCameAngle)^2 / (2 * fct^2))     fct ~ 6 for smooth decay around 5 and 30 deg. this will only work for 17.5deg
+
+    const float fct = 6.f;
+
+    for (auto& tCam : cameraAngle.at(refCamIdx)) {
+        int tCamIdx = tCam.first;
+        float tCamAngle = tCam.second;
+        float score = exp(-std::pow((tCamAngle - bestCameraAngleDegrees),2.f) / (2.f * fct * fct));        
+        candidates.emplace_back(std::make_pair(score, tCamIdx));
+	}    
+    
+    std::sort(candidates.begin(), candidates.end(),
+        [](const auto& a, const auto& b) { // have to use lambda to prevent indices influencing sorting
+            return a.first > b.first; 
+        });
+
+    std::vector<int> ret;
+    ret.reserve(NCams);
+
+    for (int i = 0; i < NCams; i++) ret.emplace_back(candidates[i].second);
+
+    return ret;
 }

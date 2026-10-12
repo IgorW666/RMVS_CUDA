@@ -7,11 +7,11 @@
 #include <utility> // for std::pair
 
 /*
-* Zncc Score will have pitch value according to the number of tested depth and normal hypotheses
-* For every depth hypothesis, there will be a number of normal hypotheses tested
-* So the step of output will have to be decoded properly to get the correct score for a given depth and normal hypothesis
-* Everything has to fit to a block nicely so the numbers are critical
-* Probable first try for 256 threads per block:
+* zncc Score will have pitch value according to the number of tested depth and normal hypotheses
+* for every depth hypothesis, there will be a number of normal hypotheses tested
+* so the step of output will have to be decoded properly to get the correct score for a given depth and normal hypothesis
+* everything has to fit to a block nicely so the numbers are critical
+* probable first try for 256 threads per block:
 *
 * 16 depth hypotheses
 *   each over 16 normal hypotheses
@@ -54,22 +54,7 @@ public:
 
     void setNormalPermutations(const NormalPermutation* normalPermutations, int count); // normal permutations are small >> __constant__
 
-    /**
-     * Execute ZNCC computation.
-     *
-     * @param refImage      Reference image (GPU memory)
-     * @param targetImage   Target image (GPU memory)
-     * @param depthMap      Depth map (GPU memory)
-     * @param normalMap     Normal map (GPU memory)
-     * @return              Result ZNCC scores (GPU memory)
-     */
-    std::vector<ResultPoint> computeZNCC(
-        const ImageData& refImage,
-        const ImageData& targetImage,
-        const std::vector<FrontierPoint>& frontierPoints,
-        const std::vector<float>& depthSteps,
-        int normalNSteps/*, const NormalPermutation* normalPermutations, const ImageData& depthMap, const ImageData& normalMap*/);
-
+   
     /**
      * Execute ZNCC computation for two target images in a single kernel pass.
      *
@@ -89,8 +74,5 @@ private:
     int windowRadius;
     ImageData znccOutput;
 
-    // Host-side copy of the normal permutations provided via setNormalPermutations.
-    // Stored so computeZNCC can reconstruct hypothesis normals on the host when repacking
-    // GPU results into ResultPoint entries.
-    std::vector<NormalPermutation> normalPermutationsHost;
+	std::vector<NormalPermutation> normalPermutationsHost; // need that to reconstruct normals on host after kernel run
 };

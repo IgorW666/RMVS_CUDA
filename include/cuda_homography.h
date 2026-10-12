@@ -47,22 +47,6 @@ void launchEvaluateZNCC_DualTargets(
     int frontierCount);
 
 /**
- * Evaluates ZNCC kernel (device code).
- */
-__global__
-void evaluateZNCC(const float* refImg,
-    const float* targetImg,
-    const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
-    const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
-    float* result,
-    int depthNSteps,
-    int normalNSteps,
-    int refWidth,
-    int refHeight,
-    int targetWidth,
-    int targetHeight);
-
-/**
  * Dual-target evaluate kernel (device code).
  */
 __global__
@@ -124,3 +108,20 @@ void setImagePitchesDual(size_t refPitch_host, size_t targetPitch_host, size_t t
  * Checks for CUDA errors and prints diagnostic information.
  */
 void checkCudaError(const char* message);
+
+// unused single cam kernel
+/**
+ * Evaluates ZNCC kernel (device code).
+ */
+ /*__global__
+ void evaluateZNCC(const float* refImg,
+     const float* targetImg,
+     const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
+     const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
+     float* result,
+     int depthNSteps,
+     int normalNSteps,
+     int refWidth,
+     int refHeight,
+     int targetWidth,
+     int targetHeight);*/

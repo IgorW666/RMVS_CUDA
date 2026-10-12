@@ -10,7 +10,7 @@ ImageHandler::~ImageHandler() {
 ImageData ImageHandler::loadImageToGPU(const std::string& filename) {    
     cv::Mat cpuImage = cv::imread(filename, cv::IMREAD_GRAYSCALE);
     if (cpuImage.empty()) throw std::runtime_error("Failed to load image: " + filename);
-    if (false) {    
+    if (false) {    // maybe reduces the "halo" effect a little
         cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
         clahe->apply(cpuImage, cpuImage);
     }
