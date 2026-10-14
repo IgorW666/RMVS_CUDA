@@ -16,12 +16,12 @@
 #include <unordered_map>
 #include <unordered_set>
 
-const bool SAVE_DEBUG_DATA = false;
+const bool SAVE_DEBUG_DATA = true;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 32;                     // originally 16. Can be increased but not sure if it changes anything yet
-const int NORMAL_PERMUTATIONS = 16;             // 
-//const float CONE_ANGLE_DEGREES = 20.0f;          // budda2 test show 8-9 deg to be best
+const int NORMAL_PERMUTATIONS = 16;
+const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = {{3.f, 4},{6.f, 5},{18.f, 6}}; // { {6.f, 7}, {18.f, 8} };
 const float DEPTH_STEP_SIZE = 0.006f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 
@@ -33,26 +33,16 @@ std::vector<float> generateDepthSteps(float interval, int steps);
 std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngles(const std::vector<Camera>& cameras);
 std::vector<int> findBestCamerasByAngleGaussian(const int& refCamIdx, const int& NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, const float& bestCameraAngleDegrees);
 
-
 // TODO:
 // - add color to dense point clouds
-// - add more anlgles to normal permutations
+// - add more anlgles to normal permutations DONE
 // - add normal vector dot product during propagation to filter out "impossible" normals
 // - try different zncc aggregation methods
 // - switch to disparity?
-// - find the pdf with "chessboard pattern propagation" or "red-black" !!! (gipuma?)
+// - find the pdf with "chessboard pattern propagation" or "red-black" !!! (gipuma?) << https://openaccess.thecvf.com/content_iccv_2015/papers/Galliani_Massively_Parallel_Multiview_ICCV_2015_paper.pdf doesn't really solve anything
+// - precompute normals in the sparse point cloud
 
-int main() {
-
-    //float DEPTH_STEP_SIZE = 0.05f;
-    //float CONE_ANGLE_DEGREES = 0.5f;
-
-    //NormalPermutationGenerator normalPermGen(NORMAL_PERMUTATIONS);
-    //std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(CONE_ANGLE_DEGREES, true);
-
-    if (SAVE_DEBUG_DATA) {
-       // normalPermGen.saveNormalsAsXyz("normals_debug.xyz", CONE_ANGLE_DEGREES);
-    }
+int main() {    
 
     std::string folderPath = "data\\lew\\";
     std::vector<Camera> cameras;
@@ -64,176 +54,172 @@ int main() {
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
     ImageHandler imageHandler;
 
-    //for (int t = 0; t < 40; ++t) {
+    NormalPermutationGenerator normalPermGen(NORMAL_PERMUTATIONS);
+    std::vector<NormalPermutation> normalPermutations = normalPermGen.generateMulti(NORMAL_PERMUTATION_RINGS);
+
+    if (SAVE_DEBUG_DATA) {
+        normalPermGen.saveNormalsAsXyz("normals_debug.xyz", normalPermutations);
+    }
+
+    for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
+
+        auto bestCameras = findBestCamerasByAngleGaussian(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+
+        int targetIdx0 = -1;
+        int targetIdx1 = -1;
+
+        if (bestCameras.size() >= 2) {
+            targetIdx0 = bestCameras[0];
+            targetIdx1 = bestCameras[1];
+        }
+        else {
+            throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx)); // selection is fixed, this should never happen again
+        }
+
+        const std::string refImgName = cameras[refCamIdx].name;
+        const std::string refImgPth = folderPath + "img\\" + refImgName;
+        ImageData refImage = imageHandler.loadImageToGPU(refImgPth);
+
+        const std::string targetImgPth0 = folderPath + "img\\" + cameras[targetIdx0].name;
+        const std::string targetImgPth1 = folderPath + "img\\" + cameras[targetIdx1].name;
+        ImageData targetImage0 = imageHandler.loadImageToGPU(targetImgPth0);
+        ImageData targetImage1 = imageHandler.loadImageToGPU(targetImgPth1);
+
+        float avgDepth = 0.0f;
+        CloudLoader cloudLoader;
+
+        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
 
 
-        NormalPermutationGenerator normalPermGen(NORMAL_PERMUTATIONS);
-        //std::vector<NormalPermutation> normalPermutations = normalPermGen.generateSingle(CONE_ANGLE_DEGREES, true);
-        //std::vector<NormalPermutation> normalPermutations = normalPermGen.generateMulti(10.f, 6, 20.f, 9, true);
-        std::vector<NormalPermutation> normalPermutations = normalPermGen.generateMulti(6.f, 7, 18.f, 8, true);
+        float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
-        for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
+        const int IMG_WIDTH = refImage.width;
+        const int IMG_HEIGHT = refImage.height;
+        const double progressImageScale = 900.f / float(std::max(IMG_WIDTH, IMG_HEIGHT));
 
-            auto bestCameras = findBestCamerasByAngleGaussian(refCamIdx, 2, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
+        ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
-            int targetIdx0 = -1;
-            int targetIdx1 = -1;
+        std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
 
-            if (bestCameras.size() >= 2) {
-                targetIdx0 = bestCameras[0];
-                targetIdx1 = bestCameras[1];
-            }
-            else {
-                throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx)); // selection is fixed, this should never happen again
-            }
+        HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
+        HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
 
-            const std::string refImgName = cameras[refCamIdx].name;
-            const std::string refImgPth = folderPath + "img\\" + refImgName;
-            ImageData refImage = imageHandler.loadImageToGPU(refImgPth);
+        processor.setCameraMatrices(hp0.H0.data(), hp0.K1inv.data(), hp0.e2.data());
+        processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
+        processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
-            const std::string targetImgPth0 = folderPath + "img\\" + cameras[targetIdx0].name;
-            const std::string targetImgPth1 = folderPath + "img\\" + cameras[targetIdx1].name;
-            ImageData targetImage0 = imageHandler.loadImageToGPU(targetImgPth0);
-            ImageData targetImage1 = imageHandler.loadImageToGPU(targetImgPth1);
+        cv::Mat depthMap = depthMapInit.clone();
+        cv::Mat normalMap = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_32FC3);
+        cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
-            float avgDepth = 0.0f;
-            CloudLoader cloudLoader;
+        std::vector<FrontierPoint> frontierPoints;
+        frontierPoints.reserve(1024);           
+        cv::Vec3f initialNormal = cv::Vec3f(0.f, 0.f, 1.0f); // supposed to be 0,0,1 but I'm trying to fight the weird condition in the kernel
 
-            cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
-
-            float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
-
-            const int IMG_WIDTH = refImage.width;
-            const int IMG_HEIGHT = refImage.height;
-            const double progressImageScale = 900.f / float(std::max(IMG_WIDTH, IMG_HEIGHT));
-
-            ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
-
-            std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
-
-            HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
-            HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
-
-            processor.setCameraMatrices(hp0.H0.data(), hp0.K1inv.data(), hp0.e2.data());
-            processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
-
-            processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
-
-            cv::Mat depthMap = depthMapInit.clone();
-            cv::Mat normalMap = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_32FC3);
-            cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
-
-            std::vector<FrontierPoint> frontierPoints;
-            frontierPoints.reserve(1024);
-            //   0.194743, 0.194543, 0.961368     
-            cv::Vec3f initialNormal = cv::Vec3f(0.f, 0.f, 1.0f); // supposed to be 0,0,1 but I'm trying to fight the weird condition in the kernel
-
-            for (int y = 0; y < IMG_HEIGHT; ++y) {
-                for (int x = 0; x < IMG_WIDTH; ++x) {
-                    float d = depthMap.at<float>(y, x);
-                    if (d > 0.f) {
-                        FrontierPoint fp;
-                        fp.x = x;
-                        fp.y = y;
-                        fp.depth = d;
-                        fp.normal = make_float3(initialNormal[0], initialNormal[1], initialNormal[2]);
-                        frontierPoints.push_back(fp);
-                        visited.at<uchar>(y, x) = 1;
-                        normalMap.at<cv::Vec3f>(y, x) = initialNormal;
-                    }
+        for (int y = 0; y < IMG_HEIGHT; ++y) {
+            for (int x = 0; x < IMG_WIDTH; ++x) {
+                float d = depthMap.at<float>(y, x);
+                if (d > 0.f) {
+                    FrontierPoint fp;
+                    fp.x = x;
+                    fp.y = y;
+                    fp.depth = d;
+                    fp.normal = make_float3(initialNormal[0], initialNormal[1], initialNormal[2]);
+                    frontierPoints.push_back(fp);
+                    visited.at<uchar>(y, x) = 1;
+                    normalMap.at<cv::Vec3f>(y, x) = initialNormal;
                 }
             }
+        }
 
-            size_t iteration = 0;
-            const size_t maxIterations = static_cast<size_t>(IMG_WIDTH) * static_cast<size_t>(IMG_HEIGHT);
+        size_t iteration = 0;
+        const size_t maxIterations = static_cast<size_t>(IMG_WIDTH) * static_cast<size_t>(IMG_HEIGHT);
 
-            while (!frontierPoints.empty() && iteration < maxIterations) {
-                ++iteration;
-                std::cout << "Iteration " << iteration << ", frontier size: " << frontierPoints.size() << "                \r" << std::flush;
+        while (!frontierPoints.empty() && iteration < maxIterations) {
+            ++iteration;
+            std::cout << "Iteration " << iteration << ", frontier size: " << frontierPoints.size() << "                \r" << std::flush;
 
-                if (REMOVE_SFM_POINTS && iteration == 1) {
-                    depthMap.setTo(0.f);
+            if (REMOVE_SFM_POINTS && iteration == 1) {
+                depthMap.setTo(0.f);
+            }
+
+            std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
+                refImage,
+                targetImage0,
+                targetImage1,
+                frontierPoints,
+                depthSteps,
+                static_cast<int>(normalPermutations.size()));
+
+            if (results.empty()) {
+                std::cout << "No valid results returned by computeZNCC. Stopping.\n";
+                break;
+            }
+
+            // update depth map, normal map and visited mask << there is some logic potential here like revisiting points with low score
+            for (const auto& rp : results) {
+                if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
+                    depthMap.at<float>(rp.y, rp.x) = rp.depth;
+                    normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
+                    visited.at<uchar>(rp.y, rp.x) = 1;
                 }
+            }
 
-                std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
-                    refImage,
-                    targetImage0,
-                    targetImage1,
-                    frontierPoints,
-                    depthSteps,
-                    static_cast<int>(normalPermutations.size()));
-
-                if (results.empty()) {
-                    std::cout << "No valid results returned by computeZNCC. Stopping.\n";
-                    break;
-                }
-
-                // update depth map, normal map and visited mask << there is some logic potential here like revisiting points with low score
-                for (const auto& rp : results) {
-                    if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
-                        depthMap.at<float>(rp.y, rp.x) = rp.depth;
-                        normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
-                        visited.at<uchar>(rp.y, rp.x) = 1;
-                    }
-                }
-
-                // build next frontier
-                std::vector<FrontierPoint> nextFrontier;
-                nextFrontier.reserve(results.size() * 8);
-                for (const auto& rp : results) {
-                    for (int dy = -1; dy <= 1; ++dy) {
-                        for (int dx = -1; dx <= 1; ++dx) {
-                            if (dx == 0 && dy == 0) continue;
-                            int nx = rp.x + dx;
-                            int ny = rp.y + dy;
-                            if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;
-                            if (visited.at<uchar>(ny, nx) == 0) {
-                                FrontierPoint child;
-                                child.x = nx;
-                                child.y = ny;
-                                child.depth = rp.depth;
-                                child.normal = rp.normal;
-                                nextFrontier.push_back(child);
-                                visited.at<uchar>(ny, nx) = 1;
-                            }
+            // build next frontier
+            std::vector<FrontierPoint> nextFrontier;
+            nextFrontier.reserve(results.size() * 8);
+            for (const auto& rp : results) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dy == 0) continue;
+                        int nx = rp.x + dx;
+                        int ny = rp.y + dy;
+                        if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;
+                        if (visited.at<uchar>(ny, nx) == 0) {
+                            FrontierPoint child;
+                            child.x = nx;
+                            child.y = ny;
+                            child.depth = rp.depth;
+                            child.normal = rp.normal;
+                            nextFrontier.push_back(child);
+                            visited.at<uchar>(ny, nx) = 1;
                         }
                     }
                 }
-
-                frontierPoints.swap(nextFrontier);
-
-                if (true) { // i guess this isn't good for performance. the whole program is in debug state anyway
-                    cv::Mat progressImage;
-                    cv::resize(depthMap, progressImage, cv::Size(), progressImageScale, progressImageScale, cv::INTER_NEAREST);
-                    progressImage.convertTo(progressImage, CV_8U, 255.f, 0.0f);
-                    cv::imshow("Depth Map Progress", progressImage);
-                    cv::waitKey(1);
-                }
             }
 
-            cv::destroyAllWindows();
-            depthMapInit = depthMap;
+            frontierPoints.swap(nextFrontier);
 
-            std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
-            saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[refCamIdx]);
-
-            if (SAVE_DEBUG_DATA) {
-                saveNormalMapPng("result_normal_map.png", normalMap, depthMapInit);
-                cv::Mat depthMapToSave, depthMapNormalized;
-                cv::normalize(depthMap, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
-                depthMapNormalized.convertTo(depthMapToSave, CV_8U, 255.0f);
-                cv::imwrite("final_depth_map.png", depthMapToSave);
+            if (true) { // i guess this isn't good for performance. the whole program is in debug state anyway
+                cv::Mat progressImage;
+                cv::resize(depthMap, progressImage, cv::Size(), progressImageScale, progressImageScale, cv::INTER_NEAREST);
+                progressImage.convertTo(progressImage, CV_8U, 255.f, 0.0f);
+                cv::imshow("Depth Map Progress", progressImage);
+                cv::waitKey(1);
             }
-
-            imageHandler.freeGPUImage(refImage);
-            imageHandler.freeGPUImage(targetImage0);
-            imageHandler.freeGPUImage(targetImage1);
-
-            std::cout << "\n\nReference Camera[" << refCamIdx << "] Iterations: " << iteration << "\n";
         }
-		//DEPTH_STEP_SIZE *= 0.9f; // reduce depth step size for next iteration
-    //}
 
+        cv::destroyAllWindows();
+        depthMapInit = depthMap;
+
+        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
+        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[refCamIdx]);
+
+        if (SAVE_DEBUG_DATA) {
+            saveNormalMapPng("result_normal_map.png", normalMap, depthMapInit);
+            cv::Mat depthMapToSave, depthMapNormalized;
+            cv::normalize(depthMap, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
+            depthMapNormalized.convertTo(depthMapToSave, CV_8U, 255.0f);
+            cv::imwrite("final_depth_map.png", depthMapToSave);
+        }
+
+        imageHandler.freeGPUImage(refImage);
+        imageHandler.freeGPUImage(targetImage0);
+        imageHandler.freeGPUImage(targetImage1);
+
+        std::cout << "\n\nReference Camera[" << refCamIdx << "] Iterations: " << iteration << "\n";
+    }
+    
     return 0;
 }
 
