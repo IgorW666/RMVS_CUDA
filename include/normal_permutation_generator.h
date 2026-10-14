@@ -61,6 +61,36 @@ public:
         return permutations;
     }
 
+    // Generates 1 unchanged parent permutation (0,0) plus two rings of child permutations.
+   // Ring 1 uses coneAngleDegrees1 with count1 samples, ring 2 uses coneAngleDegrees2 with count2 samples.
+   // The second ring is offset by half a step so its samples interleave with the first ring.
+   // Requirement: 1 + count1 + count2 must equal the total permutation count.
+    std::vector<NormalPermutation> generateMulti(float coneAngleDegrees1, std::size_t count1,
+        float coneAngleDegrees2, std::size_t count2, bool dbgPrintPermutations = false) const
+    {
+        if (1 + count1 + count2 != m_count)
+            throw std::invalid_argument(
+                "generateMulti: 1 + count1 + count2 must equal the total permutation count.");
+
+        std::vector<NormalPermutation> permutations;
+        permutations.reserve(m_count);
+
+        // Permutation 0: unchanged parent normal.
+        permutations.push_back({ 0.0f, 0.0f });
+
+        appendRing(permutations, coneAngleDegrees1, count1, 0.0f);
+        appendRing(permutations, coneAngleDegrees2, count2, 0.5f);
+
+        if (dbgPrintPermutations) {
+            std::cout << "Normal Permutations (multi):\n";
+            for (const auto& perm : permutations) {
+                std::cout << "Tangent: " << perm.tangent << ", Bitangent: " << perm.bitangent << "\n";
+            }
+        }
+
+        return permutations;
+    }
+
     // Debug: save generated normals as 3D points in an .xyz file for verification.
     // Writes 2 points per normal: origin (0,0,0) and the normalized permuted normal (x,y,z).
     // The parent normal is assumed to be (0,0,1). The permutation (tangent, bitangent)
@@ -104,5 +134,32 @@ public:
     }
 
 private:
+
+    // Appends 'count' permutations evenly spaced on a circle of radius tan(coneAngleDegrees).
+   // 'phase' is a fraction of the angular step (0.0 = start at 0 rad, 0.5 = half-step offset).
+    static void appendRing(std::vector<NormalPermutation>& permutations,
+        float coneAngleDegrees, std::size_t count, float phase)
+    {
+        constexpr float pi = 3.14159265358979323846f;
+
+        if (count == 0)
+            return;
+
+        const float radius =
+            std::tan(coneAngleDegrees * pi / 180.0f);
+
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const float theta =
+                2.0f * pi * (static_cast<float>(i) + phase)
+                / static_cast<float>(count);
+
+            permutations.push_back({
+                radius * std::cos(theta),
+                radius * std::sin(theta)
+                });
+        }
+    }
+
     std::size_t m_count;
 };

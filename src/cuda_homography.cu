@@ -54,14 +54,14 @@ bool projectSampleGeneric(const float* H, const float* Kinv_local, const float* 
     float3 q = matmul3x3_point(Kinv_local, referencePoint);
     float s = (normal.x * q.x + normal.y * q.y + normal.z * q.z) / depth;
     float3 h = matmul3x3_point(H, referencePoint);
-    float3 p = make_float3(
+	float3 p = make_float3(     // homogenous coordinates
         h.x + e_local[0] * s,
         h.y + e_local[1] * s,
         h.z + e_local[2] * s
     );
     if (p.z <= 1e-6f)
         return false;
-    xy = make_float2(p.x / p.z, p.y / p.z);
+	xy = make_float2(p.x / p.z, p.y / p.z); // convert to pixel coordinates
     return true;
 }
 
@@ -197,11 +197,24 @@ void evaluateZNCC_DualTargets(
 	// maybe setting the initial normals to slightly off-axis would be better than this?
     // result normals on dense clouds sometimes look like "wet hair" instead of spikes
     // commenting this out breaks the reconstruction 
-    if (fabsf(parentNormal.z) < 0.999f) {
+    /*if (fabsf(parentNormal.z) < 0.999f) {
         reference = make_float3(0.0f, 0.0f, 1.0f);
     }
     else {
         reference = make_float3(0.0f, 1.0f, 0.0f);
+    }*/
+
+    if (fabsf(parentNormal.x) <= fabsf(parentNormal.y) && fabsf(parentNormal.x) <= fabsf(parentNormal.z))
+    {
+        reference = make_float3(1.0f, 0.0f, 0.0f);
+    }
+    else if (fabsf(parentNormal.y) <= fabsf(parentNormal.z))
+    {
+        reference = make_float3(0.0f, 1.0f, 0.0f);
+    }
+    else
+    {
+        reference = make_float3(0.0f, 0.0f, 1.0f);
     }
 
     parentTangent = normalize(cross(reference, parentNormal));
@@ -255,6 +268,7 @@ void evaluateZNCC_DualTargets(
             float2 uv0;
             float2 uv1;
 
+            // returns false if depth < 0
             bool valid0 = projectSampleGeneric(H0_0, K1inv_0, e2_0, refPt, planeOffset, normVec, uv0);
             bool valid1 = projectSampleGeneric(H0_1, K1inv_1, e2_1, refPt, planeOffset, normVec, uv1);
 

@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <utility>
 
-constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
 constexpr bool induceDepthDevPenalty = true; // whether to apply depth deviation penalty in ZNCC evaluation
 constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
 
@@ -137,11 +137,24 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                 float3 parentNormal = host_normalize(frontierPoints[fIdx].normal);
 
                 float3 reference;
-                if (std::fabs(parentNormal.z) < 0.999f) {
-                    reference = make_float3(0.0f, 0.0f, 1.0f);
+                //if (std::fabs(parentNormal.z) < 0.999f) {
+                //    reference = make_float3(0.0f, 0.0f, 1.0f);
+                //}
+                //else {
+                //    reference = make_float3(0.0f, 1.0f, 0.0f);
+                //}
+
+                const float ax = std::fabs(parentNormal.x);
+                const float ay = std::fabs(parentNormal.y);
+                const float az = std::fabs(parentNormal.z);
+                if (ax <= ay && ax <= az) {
+                    reference = make_float3(1.0f, 0.0f, 0.0f);
+                }
+                else if (ay <= az) {
+                    reference = make_float3(0.0f, 1.0f, 0.0f);
                 }
                 else {
-                    reference = make_float3(0.0f, 1.0f, 0.0f);
+                    reference = make_float3(0.0f, 0.0f, 1.0f);
                 }
 
                 float3 parentTangent = host_normalize(host_cross(reference, parentNormal));

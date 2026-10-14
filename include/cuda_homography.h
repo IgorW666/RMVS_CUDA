@@ -10,7 +10,7 @@
  * @param refWidth/refHeight        Reference image size (also depth/normal/output size)
  * @param targetWidth/targetHeight  Target image size
  */
-void launchEvaluateZNCC(const float* refImg,
+/*void launchEvaluateZNCC(const float* refImg,
     const float* targetImg,
     const FrontierPoint* frontier,   // array with frontier points with depth and normal inherited from parent but new {x,y} <int>
     const float* depthSteps,         // array with depth values for that frontier point eg {-0.98, -0.99, 1.00, 1.01, 1.02 } but 8 or 16 values
@@ -21,7 +21,7 @@ void launchEvaluateZNCC(const float* refImg,
     int refHeight,
     int targetWidth,
     int targetHeight,
-    int frontierCount); // <-- added frontierCount parameter
+    int frontierCount); // frontierCount parameter*/
 
 /**
  * Dual-target launcher: computes ZNCC against two different target images in one kernel pass.
