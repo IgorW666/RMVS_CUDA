@@ -16,14 +16,24 @@
 #include <unordered_map>
 #include <unordered_set>
 
-const bool SAVE_DEBUG_DATA = true;
+const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
 const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
-const int DEPTH_STEPS = 32;                     // originally 16. Can be increased but not sure if it changes anything yet
-const int NORMAL_PERMUTATIONS = 16;
-const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = {{3.f, 4},{6.f, 5},{18.f, 6}}; // { {6.f, 7}, {18.f, 8} };
-const float DEPTH_STEP_SIZE = 0.006f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const int DEPTH_STEPS = 64;                     // originally 16. Can be increased but not sure if it changes anything yet
+const int NORMAL_PERMUTATIONS = 8;
+const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {5.f, 7} };
+const float DEPTH_STEP_SIZE = 0.002f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
+
+// 16 : {{4.f, 7}, {14.f, 8}}
+// 16 : {{3.f, 4}, {8.f, 5}, {18.f, 6}}
+// 32 : {{3.f, 15}, {12.f, 16}}
+// 32 : {{2.5f, 8}, {7.f, 10}, {18.f, 13}}
+// 32 : {{2.f, 6}, {5.f, 7}, {10.f, 8}, {20.f, 10}}
+// 32 : {{2.f, 4}, {4.f, 5}, {8.f, 6}, {14.f, 7}, {24.f, 9}}
+
+
+
 
 // move helpers to another file
 HomographyParams calcHomographyParamsW2C(const Camera& cam1, const Camera& cam2);
@@ -51,11 +61,17 @@ int main() {
         cameras = cameraLoader.loadFromCSV("data\\lew\\lew.csv");
     }
 
+    if (cameras.size() < 3) {
+        std::cerr << "Error: At least 3 cameras are required for this algorithm." << std::endl;
+        return -1;
+	}
+
     std::unordered_map<int, std::unordered_map<int, float>> cameraAngle = calculateCameraAxisAngles(cameras);
     ImageHandler imageHandler;
 
     NormalPermutationGenerator normalPermGen(NORMAL_PERMUTATIONS);
     std::vector<NormalPermutation> normalPermutations = normalPermGen.generateMulti(NORMAL_PERMUTATION_RINGS);
+	//std::vector<NormalPermutation> normalPermutations = { {0.0f, 0.0f} }; // only the parent normal, no permutations}
 
     if (SAVE_DEBUG_DATA) {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", normalPermutations);
@@ -73,7 +89,8 @@ int main() {
             targetIdx1 = bestCameras[1];
         }
         else {
-            throw std::runtime_error("Not enough best cameras found for reference camera " + std::to_string(refCamIdx)); // selection is fixed, this should never happen again
+            std::cerr << "Not enough best cameras found for reference camera " + std::to_string(refCamIdx) << std::endl; // selection is fixed, this should never happen again
+            return -1;
         }
 
         const std::string refImgName = cameras[refCamIdx].name;
@@ -88,8 +105,8 @@ int main() {
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
 
-        cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
-
+        //cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, true);
 
         float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
@@ -108,26 +125,28 @@ int main() {
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
         processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
-        cv::Mat depthMap = depthMapInit.clone();
-        cv::Mat normalMap = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_32FC3);
+        cv::Mat depthMap = refDepthNormals.depthMap.clone();   // why am I using clones ?
+		cv::Mat normalMap = refDepthNormals.normalMap.clone(); // why am I using clones ? + the depth map is not used for anything other then debug
         cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
         frontierPoints.reserve(1024);           
-        cv::Vec3f initialNormal = cv::Vec3f(0.f, 0.f, 1.0f); // supposed to be 0,0,1 but I'm trying to fight the weird condition in the kernel
-
+        //cv::Vec3f initialNormal = cv::Vec3f(0.f, 0.f, 1.0f); // 0,0,1 turns normals away from cam
+        cv::Vec3f initialNormal = cv::Vec3f(0.1f, 0.f, -0.9f); // tilted normal leaves the normal facing the cam 
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
                 float d = depthMap.at<float>(y, x);
                 if (d > 0.f) {
+					cv::Vec3f normal = normalMap.at<cv::Vec3f>(y, x);
                     FrontierPoint fp;
                     fp.x = x;
                     fp.y = y;
                     fp.depth = d;
                     fp.normal = make_float3(initialNormal[0], initialNormal[1], initialNormal[2]);
+                    //fp.normal = make_float3(normal[0], normal[1], normal[2]);
                     frontierPoints.push_back(fp);
                     visited.at<uchar>(y, x) = 1;
-                    normalMap.at<cv::Vec3f>(y, x) = initialNormal;
+                    //normalMap.at<cv::Vec3f>(y, x) = initialNormal;
                 }
             }
         }
@@ -165,7 +184,7 @@ int main() {
                 }
             }
 
-            // build next frontier
+            // build next frontier                       // could chcek if a resulting normal looks "possible" here
             std::vector<FrontierPoint> nextFrontier;
             nextFrontier.reserve(results.size() * 8);
             for (const auto& rp : results) {
@@ -200,13 +219,13 @@ int main() {
         }
 
         cv::destroyAllWindows();
-        depthMapInit = depthMap;
+        //depthMapInit = depthMap;
 
         std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
-        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMapInit, cameras[refCamIdx]);
+        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMap, cameras[refCamIdx]);
 
         if (SAVE_DEBUG_DATA) {
-            saveNormalMapPng("result_normal_map.png", normalMap, depthMapInit);
+            saveNormalMapPng("result_normal_map.png", normalMap, depthMap);
             cv::Mat depthMapToSave, depthMapNormalized;
             cv::normalize(depthMap, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
             depthMapNormalized.convertTo(depthMapToSave, CV_8U, 255.0f);
@@ -258,7 +277,7 @@ HomographyParams calcHomographyParamsW2C( // finally...
 }
 
 // Save normal map into XYZ file (x y z nx ny nz), using depth map to backproject points.
-void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam)
+/*void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam)
 {
     std::ofstream out(filename, std::ios::binary);
     if (!out.is_open()) {
@@ -314,6 +333,100 @@ void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, con
                 Xw.at<double>(1, 0),
                 Xw.at<double>(2, 0),
                 nx, ny, nz);
+            if (nbytes > 0) {
+                buffer.append(lineBuf, static_cast<size_t>(nbytes));
+            }
+
+            if (buffer.size() >= FLUSH_THRESHOLD) {
+                out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+                buffer.clear();
+            }
+        }
+    }
+
+    if (!buffer.empty()) {
+        out.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    }
+    out.close();
+}*/
+
+// Save normal map into XYZ file (x y z nx ny nz), using depth map to backproject points.
+void saveNormalsAsXyz(const std::string& filename, const cv::Mat& normalMap, const cv::Mat& depthMap, const Camera& cam)
+{
+    std::ofstream out(filename, std::ios::binary);
+    if (!out.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << "\n";
+        return;
+    }
+
+    const cv::Mat K = cam.intrinsics.camera_matrix; // CV_64F
+    const double fx = K.at<double>(0, 0);
+    const double fy = K.at<double>(1, 1);
+    const double cx = K.at<double>(0, 2);
+    const double cy = K.at<double>(1, 2);
+
+    cv::Mat R = cam.extrinsics.rotation;       // 3x3 CV_64F
+    cv::Mat t = cam.extrinsics.translation;    // 3x1 CV_64F
+    cv::Mat Rinv = R.t();                      // rotation inverse (world <- camera)
+
+    const int h = depthMap.rows;
+    const int w = depthMap.cols;
+
+    const size_t FLUSH_THRESHOLD = 1 << 20; // 1 MB
+    std::string buffer;
+    buffer.reserve(FLUSH_THRESHOLD + 256);
+
+    char lineBuf[256];
+    for (int v = 0; v < h; ++v) {
+        for (int u = 0; u < w; ++u) {
+            float z = depthMap.at<float>(v, u);
+            if (!(z > 0.0f)) continue; // skip invalid / negative depths
+
+            // Back-project to camera coordinates
+            const double Xc = (static_cast<double>(u) - cx) * static_cast<double>(z) / fx;
+            const double Yc = (static_cast<double>(v) - cy) * static_cast<double>(z) / fy;
+            const double Zc = static_cast<double>(z);
+
+            cv::Mat Xc_mat = (cv::Mat_<double>(3, 1) << Xc, Yc, Zc);
+            cv::Mat Xw = Rinv * (Xc_mat - t);
+
+            cv::Vec3f n = normalMap.at<cv::Vec3f>(v, u);
+            double nx = static_cast<double>(n[0]);
+            double ny = static_cast<double>(n[1]);
+            double nz = static_cast<double>(n[2]);
+
+            // normalize normal in camera frame if needed
+            double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 1e-6) {
+                nx /= len; ny /= len; nz /= len;
+            }
+            else {
+                // fallback normal (camera frame)
+                nx = 0.0; ny = 0.0; nz = 1.0;
+            }
+
+            // Rotate normal to world coordinates: n_w = R^T * n_c (Rinv == R.t())
+            cv::Mat nC = (cv::Mat_<double>(3, 1) << nx, ny, nz);
+            cv::Mat nW = Rinv * nC;
+
+            double nwx = nW.at<double>(0, 0);
+            double nwy = nW.at<double>(1, 0);
+            double nwz = nW.at<double>(2, 0);
+
+            // normalize world normal to be safe
+            double nwlen = std::sqrt(nwx * nwx + nwy * nwy + nwz * nwz);
+            if (nwlen > 1e-6) {
+                nwx /= nwlen; nwy /= nwlen; nwz /= nwlen;
+            }
+            else {
+                nwx = 0.0; nwy = 0.0; nwz = 1.0;
+            }
+
+            int nbytes = snprintf(lineBuf, sizeof(lineBuf), "%.6f %.6f %.6f %.6f %.6f %.6f\n",
+                Xw.at<double>(0, 0),
+                Xw.at<double>(1, 0),
+                Xw.at<double>(2, 0),
+                static_cast<float>(nwx), static_cast<float>(nwy), static_cast<float>(nwz));
             if (nbytes > 0) {
                 buffer.append(lineBuf, static_cast<size_t>(nbytes));
             }

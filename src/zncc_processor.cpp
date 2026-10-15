@@ -137,14 +137,14 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                 float3 parentNormal = host_normalize(frontierPoints[fIdx].normal);
 
                 float3 reference;
-                //if (std::fabs(parentNormal.z) < 0.999f) {
-                //    reference = make_float3(0.0f, 0.0f, 1.0f);
-                //}
-                //else {
-                //    reference = make_float3(0.0f, 1.0f, 0.0f);
-                //}
+                if (std::fabs(parentNormal.z) < 0.999f) {
+                    reference = make_float3(0.0f, 0.0f, 1.0f);
+                }
+                else {
+                    reference = make_float3(0.0f, 1.0f, 0.0f);
+                }
 
-                const float ax = std::fabs(parentNormal.x);
+                /*const float ax = std::fabs(parentNormal.x);
                 const float ay = std::fabs(parentNormal.y);
                 const float az = std::fabs(parentNormal.z);
                 if (ax <= ay && ax <= az) {
@@ -155,7 +155,7 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                 }
                 else {
                     reference = make_float3(0.0f, 0.0f, 1.0f);
-                }
+                }*/
 
                 float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
                 float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
