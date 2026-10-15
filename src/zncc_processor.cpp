@@ -10,7 +10,7 @@
 #include <utility>
 
 constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
-constexpr bool induceDepthDevPenalty = true; // whether to apply depth deviation penalty in ZNCC evaluation
+constexpr bool induceDepthDevPenalty = false; // whether to apply depth deviation penalty in ZNCC evaluation << whooa, keep this off!! Results are alot smoother without it !!!
 constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
@@ -130,42 +130,20 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
         std::vector<ResultPoint> consensusResults;
         consensusResults.reserve(frontierCount);
 
-        auto reconstruct_normal = [&](int fIdx, int normalIdx) -> float3 {
+        auto reconstruct_normal = [&](int fIdx, int normalIdx) -> float3 {       // declutter this into a standalone function
             if (normalIdx >= 0 && normalIdx < static_cast<int>(normalPermutationsHost.size())) {
                 NormalPermutation perm = normalPermutationsHost[normalIdx];
-
                 float3 parentNormal = host_normalize(frontierPoints[fIdx].normal);
-
                 float3 reference;
-                if (std::fabs(parentNormal.z) < 0.999f) {
-                    reference = make_float3(0.0f, 0.0f, 1.0f);
-                }
-                else {
-                    reference = make_float3(0.0f, 1.0f, 0.0f);
-                }
-
-                /*const float ax = std::fabs(parentNormal.x);
-                const float ay = std::fabs(parentNormal.y);
-                const float az = std::fabs(parentNormal.z);
-                if (ax <= ay && ax <= az) {
-                    reference = make_float3(1.0f, 0.0f, 0.0f);
-                }
-                else if (ay <= az) {
-                    reference = make_float3(0.0f, 1.0f, 0.0f);
-                }
-                else {
-                    reference = make_float3(0.0f, 0.0f, 1.0f);
-                }*/
-
+                if (std::fabs(parentNormal.z) < 0.999f) reference = make_float3(0.0f, 0.0f, 1.0f);
+                else reference = make_float3(0.0f, 1.0f, 0.0f);
                 float3 parentTangent = host_normalize(host_cross(reference, parentNormal));
                 float3 parentBitangent = host_normalize(host_cross(parentNormal, parentTangent));
-
                 float3 hypothesis = make_float3(
                     parentNormal.x + perm.tangent * parentTangent.x + perm.bitangent * parentBitangent.x,
                     parentNormal.y + perm.tangent * parentTangent.y + perm.bitangent * parentBitangent.y,
                     parentNormal.z + perm.tangent * parentTangent.z + perm.bitangent * parentBitangent.z
                 );
-
                 return host_normalize(hypothesis);
             }
             else {
@@ -181,17 +159,19 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
 
             const int baseIdx = f * resultFloatsPerFrontier;
 
+            // gather local depths and calculate local group avg depth 
+
             for (int d = 0; d < depthCount; ++d) {
                 const int depthBase = baseIdx + d * normalNSteps;
 
                 for (int n = 0; n < normalNSteps; ++n) {
-                    const float s0 = resultHost0[depthBase + n];
-                    const float s1 = resultHost1[depthBase + n];
+                    const float score0 = resultHost0[depthBase + n];
+                    const float score1 = resultHost1[depthBase + n];
 
-                    if (!std::isfinite(s0) || !std::isfinite(s1))
+                    if (!std::isfinite(score0) || !std::isfinite(score1))
                         continue;
 
-                    float jointScore = 0.5f * (s0 + s1);
+                    float jointScore = 0.5f * (score0 + score1);
 
                     // apply depth deviation penalty to the hypothesis itself
                     if (induceDepthDevPenalty) {
@@ -241,3 +221,6 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
         throw;
     }
 }
+
+
+
