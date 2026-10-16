@@ -22,7 +22,7 @@ const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds c
 const int DEPTH_STEPS = 16;                     // originally 16. Can be increased but not sure if it changes anything yet
 const int NORMAL_PERMUTATIONS = 16;
 const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {5.f, 7}, {10.f, 8} };
-const float DEPTH_STEP_SIZE = 0.006f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const float DEPTH_STEP_SIZE = 0.01f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 
 // 16 : {{4.f, 7}, {14.f, 8}}
@@ -51,11 +51,11 @@ std::vector<int> findBestCamerasByAngleGaussian(const int& refCamIdx, const int&
 
 int main() {    
 
-    std::string folderPath = "data\\lew\\";
+    std::string folderPath = "data\\budda2\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\lew\\lew.csv");
+        cameras = cameraLoader.loadFromCSV("data\\budda2\\budda.csv");
     }
 
     if (cameras.size() < 3) {
@@ -102,8 +102,7 @@ int main() {
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
 
-        //cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\budda2\\budda.xyz", cameras[refCamIdx], refImageGPU, true);
 
         float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
@@ -147,9 +146,6 @@ int main() {
                 }
             }
         }
-
-		//ImageData depthMapGPU = imageHandler.allocateGPUImage(IMG_WIDTH, IMG_HEIGHT);
-		//imageHandler.copyHostToGPU(depthMapHost.ptr<float>(), depthMapGPU, depthMapHost.step);
 
         size_t iteration = 0;
         const size_t maxIterations = static_cast<size_t>(IMG_WIDTH) * static_cast<size_t>(IMG_HEIGHT);

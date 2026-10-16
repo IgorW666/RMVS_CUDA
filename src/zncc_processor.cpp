@@ -2,18 +2,13 @@
 #include "../include/cuda_homography.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
-#include <cmath> // for std::round, sqrtf
 #include <vector>
 #include <limits>
 #include <stdexcept>
-#include <algorithm>
 #include <utility>
 
-constexpr float znccThreshold = 0.7f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
-//constexpr bool induceDepthDevPenalty = false; // whether to apply depth deviation penalty in ZNCC evaluation << whooa, keep this off!! Results are alot smoother without it !!!
-//constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
-
-constexpr int localDepthWindowOffset = 3; // offset for stddev calculation, 0 = center of window, 1 = one pixel to the right, etc. (for testing only)
+constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+constexpr int localDepthWindowOffset = 3; // huh, more filternig results in more points
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
@@ -37,11 +32,10 @@ void ZNCCProcessor::setCameraMatricesSecond(const float* H1, const float* K1inv1
 }
 
 void ZNCCProcessor::setNormalPermutations(const NormalPermutation* normalPermutations, int count) {    
-    normalPermutationsHost.assign(normalPermutations, normalPermutations + count); // keep a host-side copy so we can reconstruct hypothesis normals after the kernel run
+    normalPermutationsHost.assign(normalPermutations, normalPermutations + count); // keep the host copy to reconstruct hypothesis normals after the kernel run
     setupNormalPermutations(normalPermutations, count);
 }
 
-// host helpers (simple vector math used to reconstruct normals on host)
 static inline float3 host_normalize(const float3& v) {
     float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
     if (len <= 1e-8f) return make_float3(0.0f, 0.0f, 1.0f);
@@ -155,72 +149,175 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
             };
 
 
-        for (int f = 0; f < frontierCount; ++f) {
-            float bestJointScore = -std::numeric_limits<float>::infinity();
+        const float lambdaDepth = 0.05f;
+        const float minRelativeDepthScale = 0.01f;
+        const float maxNormalizedDeviation = 3.0f;
+        const int minNeighborsForRegularization = 4;
+
+        for (int f = 0; f < frontierCount; ++f)
+        {
+            float bestRegularizedScore = -std::numeric_limits<float>::infinity();
+            float bestPhotoScore = -std::numeric_limits<float>::infinity();
+
             int bestDepthIdx = 0;
             int bestNormalIdx = 0;
 
             const int baseIdx = f * resultFloatsPerFrontier;
 
-			int localDepthCount = 0;			
-			float localDepthMean = 0.f;
+            // Collect valid neighboring depths, excluding the center point.
+            std::vector<float> candidateLocalDepths;
+            candidateLocalDepths.reserve(
+                (2 * localDepthWindowOffset + 1) *
+                (2 * localDepthWindowOffset + 1) - 1);
 
-            for (int offsetx = -localDepthWindowOffset; offsetx <= localDepthWindowOffset; ++offsetx) {
-                for (int offsety = -localDepthWindowOffset; offsety <= localDepthWindowOffset; ++offsety) {
-					if (offsetx == 0 && offsety == 0) continue; // skip the center point
-                    int neighborX = frontierPoints[f].x + offsetx;
-                    int neighborY = frontierPoints[f].y + offsety;
-                    if (neighborX >= 0 && neighborX < depthMap.cols && neighborY >= 0 && neighborY < depthMap.rows) {
-                        float neighborDepth = depthMap.at<float>(neighborY, neighborX);
-                        if (std::isfinite(neighborDepth) && neighborDepth > 0.f) {							
-							localDepthMean += neighborDepth;
-							localDepthCount++;
-                        }
+            for (int offsetx = -localDepthWindowOffset;
+                offsetx <= localDepthWindowOffset;
+                ++offsetx)
+            {
+                for (int offsety = -localDepthWindowOffset;
+                    offsety <= localDepthWindowOffset;
+                    ++offsety)
+                {
+                    if (offsetx == 0 && offsety == 0)
+                        continue;
+
+                    const int neighborX = frontierPoints[f].x + offsetx;
+                    const int neighborY = frontierPoints[f].y + offsety;
+
+                    if (neighborX < 0 || neighborX >= depthMap.cols ||
+                        neighborY < 0 || neighborY >= depthMap.rows)
+                    {
+                        continue;
+                    }
+
+                    const float neighborDepth =
+                        depthMap.at<float>(neighborY, neighborX);
+
+                    if (std::isfinite(neighborDepth) && neighborDepth > 0.f)
+                    {
+                        candidateLocalDepths.push_back(neighborDepth);
                     }
                 }
-			}
+            }
 
-			localDepthMean /= (localDepthCount > 0) ? static_cast<float>(localDepthCount) : frontierPoints[f].depth; // avoid div by zero
+            const int localDepthCount = static_cast<int>(candidateLocalDepths.size());
 
-            if (localDepthCount > 0) {
-                bool wait1 = 1;
-            }            
+            float localDepthMedian = frontierPoints[f].depth;
+            float localDepthMAD = 0.f;
+            float localDepthScale = 0.f;
 
-            for (int d = 0; d < depthCount; ++d) {
+            if (localDepthCount >= minNeighborsForRegularization)
+            {
+                // Step 1: Calculate the median neighboring depth.
+                std::sort(
+                    candidateLocalDepths.begin(),
+                    candidateLocalDepths.end());
+
+                const size_t middle = candidateLocalDepths.size() / 2;
+
+                if (candidateLocalDepths.size() % 2 == 0)
+                {
+                    localDepthMedian =
+                        0.5f * (candidateLocalDepths[middle - 1] +
+                            candidateLocalDepths[middle]);
+                }
+                else
+                {
+                    localDepthMedian = candidateLocalDepths[middle];
+                }
+
+                // Step 2: Calculate absolute deviations from the median.
+                std::vector<float> deviations;
+                deviations.reserve(candidateLocalDepths.size());
+
+                for (const float depth : candidateLocalDepths)
+                {
+                    deviations.push_back(
+                        std::fabs(depth - localDepthMedian));
+                }
+
+                // Step 3: Calculate the median absolute deviation (MAD).
+                std::sort(deviations.begin(), deviations.end());
+
+                const size_t deviationMiddle = deviations.size() / 2;
+
+                if (deviations.size() % 2 == 0)
+                {
+                    localDepthMAD =
+                        0.5f * (deviations[deviationMiddle - 1] +
+                            deviations[deviationMiddle]);
+                }
+                else
+                {
+                    localDepthMAD = deviations[deviationMiddle];
+                }
+
+                // Step 4: Estimate local depth variation.
+                const float minDepthScale =
+                    minRelativeDepthScale * localDepthMedian;
+
+                localDepthScale = std::max(
+                    1.4826f * localDepthMAD,
+                    minDepthScale);
+            }
+
+            // Evaluate every depth-normal hypothesis.
+            for (int d = 0; d < depthCount; ++d)
+            {
                 const int depthBase = baseIdx + d * normalNSteps;
-				const float depthHypothesis = frontierPoints[f].depth + depthSteps[d];
-				const float depthDeviation = (localDepthCount > 0) ? std::fabs(depthHypothesis - localDepthMean) : 0.f;
-                bool wait2 = 1;
-                for (int n = 0; n < normalNSteps; ++n) {
+
+                const float depthHypothesis = frontierPoints[f].depth + depthSteps[d];
+
+                float depthPenalty = 0.f;
+
+                if (localDepthCount >= minNeighborsForRegularization)
+                {
+                    const float normalizedDeviation = std::fabs(depthHypothesis - localDepthMedian) / localDepthScale;
+
+                    depthPenalty = lambdaDepth * std::min(normalizedDeviation, maxNormalizedDeviation);
+                }
+
+                for (int n = 0; n < normalNSteps; ++n)
+                {
                     const float score0 = resultHost0[depthBase + n];
                     const float score1 = resultHost1[depthBase + n];
 
                     if (!std::isfinite(score0) || !std::isfinite(score1))
                         continue;
 
-                    float jointScore = 0.5f * (score0 + score1);
+                    // Original photometric agreement between the two targets.
+                    const float photoScore = 0.5f * (score0 + score1);
 
-					jointScore -= depthDeviation * 1.0f;
+                    // Regularized score used only for hypothesis selection.
+                    const float regularizedScore =
+                        photoScore - depthPenalty;
 
-                    if (jointScore > bestJointScore) {
-                        bestJointScore = jointScore;
+                    if (regularizedScore > bestRegularizedScore)
+                    {
+                        bestRegularizedScore = regularizedScore;
+                        bestPhotoScore = photoScore;
+
                         bestDepthIdx = d;
                         bestNormalIdx = n;
                     }
                 }
             }
 
-            if (!std::isfinite(bestJointScore))
+            // Reject points with no valid hypothesis.
+            if (!std::isfinite(bestRegularizedScore))
                 continue;
 
-            if (bestJointScore < znccThreshold)
+            // Test the original photometric score, not the regularized score.
+            if (bestPhotoScore < znccThreshold)
                 continue;
 
             ResultPoint rp;
             rp.x = frontierPoints[f].x;
             rp.y = frontierPoints[f].y;
+
             rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
-            rp.znccScore = bestJointScore;
+
+            rp.znccScore = bestPhotoScore;
             rp.normal = reconstruct_normal(f, bestNormalIdx);
 
             consensusResults.push_back(rp);
