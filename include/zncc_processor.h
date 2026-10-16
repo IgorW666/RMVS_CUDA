@@ -6,6 +6,12 @@
 #include <vector>
 #include <utility> // for std::pair
 
+#include <opencv2/opencv.hpp>
+
+// yeah, so some design flaws here: this wrapper separates CUDA code from "harmful" libraries like openCV
+// but i need a depth map available here. Passing a device pointer doesn't solve the problem because
+// I cannot read a gpu pointer on the host
+
 /*
 * zncc Score will have pitch value according to the number of tested depth and normal hypotheses
 * for every depth hypothesis, there will be a number of normal hypotheses tested
@@ -64,6 +70,9 @@ public:
         const ImageData& refImage,
         const ImageData& targetImage0,
         const ImageData& targetImage1,
+		//const ImageData& depthMap, // for now it can be const but later it will be updated iside the kernel
+		//const ImageData& normalMap, // for now it can be const but later it will be updated iside the kernel
+		cv::Mat& depthMap, // hmm       
         const std::vector<FrontierPoint>& frontierPoints,
         const std::vector<float>& depthSteps,
         int normalNSteps);
@@ -73,6 +82,6 @@ private:
     int imgHeight;
     int windowRadius;
     ImageData znccOutput;
-
+    cv::Mat test;
 	std::vector<NormalPermutation> normalPermutationsHost; // need that to reconstruct normals on host after kernel run
 };

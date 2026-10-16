@@ -18,11 +18,11 @@
 
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
-const int WINDOW_RADIUS = 5;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
-const int DEPTH_STEPS = 64;                     // originally 16. Can be increased but not sure if it changes anything yet
-const int NORMAL_PERMUTATIONS = 8;
-const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {5.f, 7} };
-const float DEPTH_STEP_SIZE = 0.002f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
+const int DEPTH_STEPS = 16;                     // originally 16. Can be increased but not sure if it changes anything yet
+const int NORMAL_PERMUTATIONS = 16;
+const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {5.f, 7}, {10.f, 8} };
+const float DEPTH_STEP_SIZE = 0.006f;// 0.0075f;          // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 
 // 16 : {{4.f, 7}, {14.f, 8}}
@@ -31,9 +31,6 @@ const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this
 // 32 : {{2.5f, 8}, {7.f, 10}, {18.f, 13}}
 // 32 : {{2.f, 6}, {5.f, 7}, {10.f, 8}, {20.f, 10}}
 // 32 : {{2.f, 4}, {4.f, 5}, {8.f, 6}, {14.f, 7}, {24.f, 9}}
-
-
-
 
 // move helpers to another file
 HomographyParams calcHomographyParamsW2C(const Camera& cam1, const Camera& cam2);
@@ -95,23 +92,23 @@ int main() {
 
         const std::string refImgName = cameras[refCamIdx].name;
         const std::string refImgPth = folderPath + "img\\" + refImgName;
-        ImageData refImage = imageHandler.loadImageToGPU(refImgPth);
+        ImageData refImageGPU = imageHandler.loadImageToGPU(refImgPth);
 
         const std::string targetImgPth0 = folderPath + "img\\" + cameras[targetIdx0].name;
         const std::string targetImgPth1 = folderPath + "img\\" + cameras[targetIdx1].name;
-        ImageData targetImage0 = imageHandler.loadImageToGPU(targetImgPth0);
-        ImageData targetImage1 = imageHandler.loadImageToGPU(targetImgPth1);
+        ImageData targetImage0GPU = imageHandler.loadImageToGPU(targetImgPth0);
+        ImageData targetImage1GPU = imageHandler.loadImageToGPU(targetImgPth1);
 
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
 
         //cv::Mat depthMapInit = cloudLoader.loadXYZToDepthMap("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, avgDepth); // init depth map from sfm cloud
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImage, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImageGPU, true);
 
         float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
-        const int IMG_WIDTH = refImage.width;
-        const int IMG_HEIGHT = refImage.height;
+        const int IMG_WIDTH = refImageGPU.width;
+        const int IMG_HEIGHT = refImageGPU.height;
         const double progressImageScale = 900.f / float(std::max(IMG_WIDTH, IMG_HEIGHT));
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
@@ -125,9 +122,9 @@ int main() {
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
         processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
-        cv::Mat depthMap = refDepthNormals.depthMap.clone();   // why am I using clones ?
-		cv::Mat normalMap = refDepthNormals.normalMap.clone(); // why am I using clones ? + the depth map is not used for anything other then debug
-        cv::Mat visited = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
+        cv::Mat depthMapHost = refDepthNormals.depthMap.clone();   // why am I using clones ?
+		cv::Mat normalMapHost = refDepthNormals.normalMap.clone(); // why am I using clones ? + the depth map is not used for anything other then debug
+        cv::Mat visitedHost = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
         frontierPoints.reserve(1024);           
@@ -135,9 +132,9 @@ int main() {
         cv::Vec3f initialNormal = cv::Vec3f(0.1f, 0.f, -0.9f); // tilted normal leaves the normal facing the cam 
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
-                float d = depthMap.at<float>(y, x);
+                float d = depthMapHost.at<float>(y, x);
                 if (d > 0.f) {
-					cv::Vec3f normal = normalMap.at<cv::Vec3f>(y, x);
+					cv::Vec3f normal = normalMapHost.at<cv::Vec3f>(y, x);
                     FrontierPoint fp;
                     fp.x = x;
                     fp.y = y;
@@ -145,11 +142,14 @@ int main() {
                     fp.normal = make_float3(initialNormal[0], initialNormal[1], initialNormal[2]);
                     //fp.normal = make_float3(normal[0], normal[1], normal[2]);
                     frontierPoints.push_back(fp);
-                    visited.at<uchar>(y, x) = 1;
+                    visitedHost.at<uchar>(y, x) = 1;
                     //normalMap.at<cv::Vec3f>(y, x) = initialNormal;
                 }
             }
         }
+
+		//ImageData depthMapGPU = imageHandler.allocateGPUImage(IMG_WIDTH, IMG_HEIGHT);
+		//imageHandler.copyHostToGPU(depthMapHost.ptr<float>(), depthMapGPU, depthMapHost.step);
 
         size_t iteration = 0;
         const size_t maxIterations = static_cast<size_t>(IMG_WIDTH) * static_cast<size_t>(IMG_HEIGHT);
@@ -159,13 +159,14 @@ int main() {
             std::cout << "Iteration " << iteration << ", frontier size: " << frontierPoints.size() << "                \r" << std::flush;
 
             if (REMOVE_SFM_POINTS && iteration == 1) {
-                depthMap.setTo(0.f);
+                depthMapHost.setTo(0.f);
             }
 
             std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
-                refImage,
-                targetImage0,
-                targetImage1,
+                refImageGPU,
+                targetImage0GPU,
+                targetImage1GPU,
+				depthMapHost, // hmm       
                 frontierPoints,
                 depthSteps,
                 static_cast<int>(normalPermutations.size()));
@@ -178,9 +179,9 @@ int main() {
             // update depth map, normal map and visited mask << there is some logic potential here like revisiting points with low score
             for (const auto& rp : results) {
                 if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
-                    depthMap.at<float>(rp.y, rp.x) = rp.depth;
-                    normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
-                    visited.at<uchar>(rp.y, rp.x) = 1;
+                    depthMapHost.at<float>(rp.y, rp.x) = rp.depth;
+                    normalMapHost.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
+                    visitedHost.at<uchar>(rp.y, rp.x) = 1;
                 }
             }
 
@@ -194,14 +195,14 @@ int main() {
                         int nx = rp.x + dx;
                         int ny = rp.y + dy;
                         if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;
-                        if (visited.at<uchar>(ny, nx) == 0) {
+                        if (visitedHost.at<uchar>(ny, nx) == 0) {
                             FrontierPoint child;
                             child.x = nx;
                             child.y = ny;
                             child.depth = rp.depth;
                             child.normal = rp.normal;
                             nextFrontier.push_back(child);
-                            visited.at<uchar>(ny, nx) = 1;
+                            visitedHost.at<uchar>(ny, nx) = 1;
                         }
                     }
                 }
@@ -211,7 +212,7 @@ int main() {
 
             if (true) { // i guess this isn't good for performance. the whole program is in debug state anyway
                 cv::Mat progressImage;
-                cv::resize(depthMap, progressImage, cv::Size(), progressImageScale, progressImageScale, cv::INTER_NEAREST);
+                cv::resize(depthMapHost, progressImage, cv::Size(), progressImageScale, progressImageScale, cv::INTER_NEAREST);
                 progressImage.convertTo(progressImage, CV_8U, 255.f, 0.0f);
                 cv::imshow("Depth Map Progress", progressImage);
                 cv::waitKey(1);
@@ -222,19 +223,19 @@ int main() {
         //depthMapInit = depthMap;
 
         std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
-        saveNormalsAsXyz(pointCloudFilename, normalMap, depthMap, cameras[refCamIdx]);
+        saveNormalsAsXyz(pointCloudFilename, normalMapHost, depthMapHost, cameras[refCamIdx]);
 
         if (SAVE_DEBUG_DATA) {
-            saveNormalMapPng("result_normal_map.png", normalMap, depthMap);
+            saveNormalMapPng("result_normal_map.png", normalMapHost, depthMapHost);
             cv::Mat depthMapToSave, depthMapNormalized;
-            cv::normalize(depthMap, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
+            cv::normalize(depthMapHost, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
             depthMapNormalized.convertTo(depthMapToSave, CV_8U, 255.0f);
             cv::imwrite("final_depth_map.png", depthMapToSave);
         }
 
-        imageHandler.freeGPUImage(refImage);
-        imageHandler.freeGPUImage(targetImage0);
-        imageHandler.freeGPUImage(targetImage1);
+        imageHandler.freeGPUImage(refImageGPU);
+        imageHandler.freeGPUImage(targetImage0GPU);
+        imageHandler.freeGPUImage(targetImage1GPU);
 
         std::cout << "\n\nReference Camera[" << refCamIdx << "] Iterations: " << iteration << "\n";
     }

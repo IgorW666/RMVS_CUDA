@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <utility>
 
-constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
-constexpr bool induceDepthDevPenalty = false; // whether to apply depth deviation penalty in ZNCC evaluation << whooa, keep this off!! Results are alot smoother without it !!!
-constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
+constexpr float znccThreshold = 0.7f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+//constexpr bool induceDepthDevPenalty = false; // whether to apply depth deviation penalty in ZNCC evaluation << whooa, keep this off!! Results are alot smoother without it !!!
+//constexpr float depthDevPenaltyStrength = 1.0f; // penalty factor for depth deviation (1 = no change) , too much and the clouds will be "stepped"
+
+constexpr int localDepthWindowOffset = 3; // offset for stddev calculation, 0 = center of window, 1 = one pixel to the right, etc. (for testing only)
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
@@ -57,7 +59,8 @@ static inline float3 host_cross(const float3& a, const float3& b) {
 std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
     const ImageData& refImage,
     const ImageData& targetImage0,
-    const ImageData& targetImage1,
+    const ImageData& targetImage1,    
+	cv::Mat& depthMap,
     const std::vector<FrontierPoint>& frontierPoints,
     const std::vector<float>& depthSteps,
     int normalNSteps) {
@@ -159,11 +162,35 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
 
             const int baseIdx = f * resultFloatsPerFrontier;
 
-            // gather local depths and calculate local group avg depth 
+			int localDepthCount = 0;			
+			float localDepthMean = 0.f;
+
+            for (int offsetx = -localDepthWindowOffset; offsetx <= localDepthWindowOffset; ++offsetx) {
+                for (int offsety = -localDepthWindowOffset; offsety <= localDepthWindowOffset; ++offsety) {
+					if (offsetx == 0 && offsety == 0) continue; // skip the center point
+                    int neighborX = frontierPoints[f].x + offsetx;
+                    int neighborY = frontierPoints[f].y + offsety;
+                    if (neighborX >= 0 && neighborX < depthMap.cols && neighborY >= 0 && neighborY < depthMap.rows) {
+                        float neighborDepth = depthMap.at<float>(neighborY, neighborX);
+                        if (std::isfinite(neighborDepth) && neighborDepth > 0.f) {							
+							localDepthMean += neighborDepth;
+							localDepthCount++;
+                        }
+                    }
+                }
+			}
+
+			localDepthMean /= (localDepthCount > 0) ? static_cast<float>(localDepthCount) : frontierPoints[f].depth; // avoid div by zero
+
+            if (localDepthCount > 0) {
+                bool wait1 = 1;
+            }            
 
             for (int d = 0; d < depthCount; ++d) {
                 const int depthBase = baseIdx + d * normalNSteps;
-
+				const float depthHypothesis = frontierPoints[f].depth + depthSteps[d];
+				const float depthDeviation = (localDepthCount > 0) ? std::fabs(depthHypothesis - localDepthMean) : 0.f;
+                bool wait2 = 1;
                 for (int n = 0; n < normalNSteps; ++n) {
                     const float score0 = resultHost0[depthBase + n];
                     const float score1 = resultHost1[depthBase + n];
@@ -173,14 +200,7 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
 
                     float jointScore = 0.5f * (score0 + score1);
 
-                    // apply depth deviation penalty to the hypothesis itself
-                    if (induceDepthDevPenalty) {
-                        const float penalty =
-                            1.f - depthDevPenaltyStrength *
-                            std::abs(depthSteps[d]);
-
-                        jointScore *= penalty;
-                    }
+					jointScore -= depthDeviation * 1.0f;
 
                     if (jointScore > bestJointScore) {
                         bestJointScore = jointScore;
