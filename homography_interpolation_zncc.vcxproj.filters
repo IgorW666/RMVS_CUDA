@@ -39,6 +39,12 @@
     <ClInclude Include="include\cloud_loader.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="include\homography_utils.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\io_utils.h">
+      <Filter>include</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\image_handler.cpp">
