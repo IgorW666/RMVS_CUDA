@@ -25,57 +25,38 @@ public:
     {
         std::vector<NormalPermutation> permutations;
         permutations.reserve(m_count);
-
-        // Permutation 0: unchanged parent normal.
         permutations.push_back({ 0.0f, 0.0f });
-
         const std::size_t childCount = m_count - 1;
         appendRing(permutations, coneAngleDegrees, childCount, 0.0f);
-
         if (dbgPrintPrmutations) {
             std::cout << "Normal Permutations:\n";
             for (const auto& perm : permutations) {
                 std::cout << "Tangent: " << perm.tangent << ", Bitangent: " << perm.bitangent << "\n";
             }
         }
-
         return permutations;
     }
 
-    // Generates 1 unchanged parent permutation (0,0) plus two rings of child permutations.
-    // Ring 1 uses coneAngleDegrees1 with count1 samples, ring 2 uses coneAngleDegrees2 with count2 samples.
-    // The second ring is offset by half a step so its samples interleave with the first ring.
-    // Requirement: 1 + count1 + count2 must equal the total permutation count.
     std::vector<NormalPermutation> generateDouble(float coneAngleDegrees1, std::size_t count1,
         float coneAngleDegrees2, std::size_t count2, bool dbgPrintPermutations = false) const
     {
         if (1 + count1 + count2 != m_count)
             throw std::invalid_argument(
                 "generateDouble: 1 + count1 + count2 must equal the total permutation count.");
-
         std::vector<NormalPermutation> permutations;
         permutations.reserve(m_count);
-
-        // Permutation 0: unchanged parent normal.
         permutations.push_back({ 0.0f, 0.0f });
-
         appendRing(permutations, coneAngleDegrees1, count1, 0.0f);
         appendRing(permutations, coneAngleDegrees2, count2, 0.5f);
-
         if (dbgPrintPermutations) {
             std::cout << "Normal Permutations (double):\n";
             for (const auto& perm : permutations) {
                 std::cout << "Tangent: " << perm.tangent << ", Bitangent: " << perm.bitangent << "\n";
             }
         }
-
         return permutations;
     }
 
-    // Generates 1 unchanged parent permutation (0,0) plus multiple rings of child permutations.
-    // Each element in the rings vector is a pair of (coneAngleDegrees, count).
-    // Example: {{1.f, 5}, {2.f, 5}, {3.f, 5}} generates 1 + 5 + 5 + 5 = 16 permutations
-    // (1 parent "0" permutation, then 5 permutations at 1°, 5 at 2°, and 5 at 3°).
     std::vector<NormalPermutation> generateMulti(
         const std::vector<std::pair<float, int>>& rings, bool dbgPrintPermutations = false) const
     {
@@ -83,35 +64,24 @@ public:
         for (const auto& ring : rings) {
             totalRequired += ring.second;
         }
-
         if (totalRequired != m_count)
             throw std::invalid_argument(
                 "generateMulti: 1 + sum of all ring counts must equal the total permutation count.");
-
         std::vector<NormalPermutation> permutations;
-        permutations.reserve(m_count);
-
-        // Permutation 0: unchanged parent normal.
+        permutations.reserve(m_count);        
         permutations.push_back({ 0.0f, 0.0f });
-
         for (const auto& ring : rings) {
             appendRing(permutations, ring.first, ring.second, 0.0f);
         }
-
         if (dbgPrintPermutations) {
             std::cout << "Normal Permutations (multi):\n";
             for (const auto& perm : permutations) {
                 std::cout << "Tangent: " << perm.tangent << ", Bitangent: " << perm.bitangent << "\n";
             }
         }
-
         return permutations;
     }
 
-    // Debug: save permutations as 3D points in an .xyz file for visualization.
-    // Writes 2 points per permutation: origin (0,0,0) and the normalized permuted normal (x,y,z).
-    // The parent normal is assumed to be (0,0,1). The permutation (tangent, bitangent)
-    // is applied as the x and y components with z = 1 before normalization.
     static void saveNormalsAsXyz(const std::string& filename,
         const std::vector<NormalPermutation>& permutations)
     {
@@ -120,58 +90,36 @@ public:
             std::cerr << "Failed to open file for writing: " << filename << "\n";
             return;
         }
-
         out << std::fixed << std::setprecision(6);
-
-        for (const auto& perm : permutations) {
-            // Point 1: origin
+        for (const auto& perm : permutations) {            
             out << 0.0f << " " << 0.0f << " " << 0.0f << "\n";
-
-            // Compute permuted normal from parent (0,0,1)
             float nx = perm.tangent;
             float ny = perm.bitangent;
             float nz = 1.0f;
-
             const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
             if (len > 0.0f) {
                 nx /= len;
                 ny /= len;
                 nz /= len;
-            }
-
-            // Point 2: tip of the normal
+            }            
             out << nx << " " << ny << " " << nz << "\n";
         }
-
         out.close();
     }
 
 private:
-
-    // Appends 'count' permutations evenly spaced on a circle of radius tan(coneAngleDegrees).
-    // 'phase' is a fraction of the angular step (0.0 = start at 0 rad, 0.5 = half-step offset).
     static void appendRing(std::vector<NormalPermutation>& permutations,
         float coneAngleDegrees, std::size_t count, float phase)
     {
         constexpr float pi = 3.14159265358979323846f;
-
         if (count == 0)
             return;
-
         const float radius = std::tan(coneAngleDegrees * pi / 180.0f);
-
         for (std::size_t i = 0; i < count; ++i)
         {
-            const float theta =
-                2.0f * pi * (static_cast<float>(i) + phase)
-                / static_cast<float>(count);
-
-            permutations.push_back({
-                radius * std::cos(theta),
-                radius * std::sin(theta)
-                });
+            const float theta = 2.0f * pi * (static_cast<float>(i) + phase) / static_cast<float>(count);
+            permutations.push_back({ radius * std::cos(theta), radius * std::sin(theta)});
         }
     }
-
     std::size_t m_count;
 };

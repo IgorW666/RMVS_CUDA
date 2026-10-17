@@ -13,22 +13,18 @@ constexpr int localDepthWindowOffset = 3; // huh, more filternig results in more
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {
     setWindowRadius(windowRadius);
-    znccOutput.gpuData = nullptr;
-    znccOutput.width = imgWidth;
-    znccOutput.height = imgHeight;
-    znccOutput.pitch = 0;
+    // all constant set functions go here
 }
 
-ZNCCProcessor::~ZNCCProcessor() {
-    if (znccOutput.gpuData) cudaFree(znccOutput.gpuData);
+ZNCCProcessor::~ZNCCProcessor() {    
 }
 
-void ZNCCProcessor::setCameraMatrices(const float* H0, const float* K1inv, const float* e2) {
-    setupCameraMatrices(H0, K1inv, e2);
+void ZNCCProcessor::setCameraMatrices(const float* H0_0, const float* K1inv_0, const float* e2_0) {
+    setupCameraMatrices(H0_0, K1inv_0, e2_0);
 }
 
-void ZNCCProcessor::setCameraMatricesSecond(const float* H1, const float* K1inv1, const float* e2_1) {    
-    setupCameraMatricesSecond(H1, K1inv1, e2_1);
+void ZNCCProcessor::setCameraMatricesSecond(const float* H0_1, const float* K1inv_1, const float* e2_1) {    
+    setupCameraMatricesSecond(H0_1, K1inv_1, e2_1);
 }
 
 void ZNCCProcessor::setNormalPermutations(const NormalPermutation* normalPermutations, int count) {    
@@ -164,11 +160,8 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
 
             const int baseIdx = f * resultFloatsPerFrontier;
 
-            // Collect valid neighboring depths, excluding the center point.
             std::vector<float> candidateLocalDepths;
-            candidateLocalDepths.reserve(
-                (2 * localDepthWindowOffset + 1) *
-                (2 * localDepthWindowOffset + 1) - 1);
+            candidateLocalDepths.reserve((2 * localDepthWindowOffset + 1) * (2 * localDepthWindowOffset + 1) - 1);
 
             for (int offsetx = -localDepthWindowOffset;
                 offsetx <= localDepthWindowOffset;
@@ -184,84 +177,55 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                     const int neighborX = frontierPoints[f].x + offsetx;
                     const int neighborY = frontierPoints[f].y + offsety;
 
-                    if (neighborX < 0 || neighborX >= depthMap.cols ||
-                        neighborY < 0 || neighborY >= depthMap.rows)
-                    {
+                    if (neighborX < 0 || neighborX >= depthMap.cols || neighborY < 0 || neighborY >= depthMap.rows)
                         continue;
-                    }
-
-                    const float neighborDepth =
-                        depthMap.at<float>(neighborY, neighborX);
+                    
+                    const float neighborDepth = depthMap.at<float>(neighborY, neighborX);
 
                     if (std::isfinite(neighborDepth) && neighborDepth > 0.f)
-                    {
                         candidateLocalDepths.push_back(neighborDepth);
-                    }
                 }
             }
 
             const int localDepthCount = static_cast<int>(candidateLocalDepths.size());
-
             float localDepthMedian = frontierPoints[f].depth;
             float localDepthMAD = 0.f;
             float localDepthScale = 0.f;
 
             if (localDepthCount >= minNeighborsForRegularization)
             {
-                // Step 1: Calculate the median neighboring depth.
-                std::sort(
-                    candidateLocalDepths.begin(),
-                    candidateLocalDepths.end());
+                std::sort(candidateLocalDepths.begin(), candidateLocalDepths.end());
 
                 const size_t middle = candidateLocalDepths.size() / 2;
 
-                if (candidateLocalDepths.size() % 2 == 0)
-                {
-                    localDepthMedian =
-                        0.5f * (candidateLocalDepths[middle - 1] +
-                            candidateLocalDepths[middle]);
-                }
-                else
-                {
+                if (candidateLocalDepths.size() % 2 == 0)                
+                    localDepthMedian = 0.5f * (candidateLocalDepths[middle - 1] + candidateLocalDepths[middle]);                
+                else                
                     localDepthMedian = candidateLocalDepths[middle];
-                }
+                
 
-                // Step 2: Calculate absolute deviations from the median.
                 std::vector<float> deviations;
                 deviations.reserve(candidateLocalDepths.size());
 
                 for (const float depth : candidateLocalDepths)
                 {
-                    deviations.push_back(
-                        std::fabs(depth - localDepthMedian));
+                    deviations.push_back(std::fabs(depth - localDepthMedian));
                 }
 
-                // Step 3: Calculate the median absolute deviation (MAD).
                 std::sort(deviations.begin(), deviations.end());
 
                 const size_t deviationMiddle = deviations.size() / 2;
 
-                if (deviations.size() % 2 == 0)
-                {
-                    localDepthMAD =
-                        0.5f * (deviations[deviationMiddle - 1] +
-                            deviations[deviationMiddle]);
-                }
-                else
-                {
-                    localDepthMAD = deviations[deviationMiddle];
-                }
+                if (deviations.size() % 2 == 0)                
+                    localDepthMAD = 0.5f * (deviations[deviationMiddle - 1] + deviations[deviationMiddle]);                
+                else                
+                    localDepthMAD = deviations[deviationMiddle];                
 
-                // Step 4: Estimate local depth variation.
-                const float minDepthScale =
-                    minRelativeDepthScale * localDepthMedian;
+                const float minDepthScale = minRelativeDepthScale * localDepthMedian;
 
-                localDepthScale = std::max(
-                    1.4826f * localDepthMAD,
-                    minDepthScale);
+                localDepthScale = std::max( 1.4826f * localDepthMAD, minDepthScale);
             }
 
-            // Evaluate every depth-normal hypothesis.
             for (int d = 0; d < depthCount; ++d)
             {
                 const int depthBase = baseIdx + d * normalNSteps;
@@ -282,15 +246,13 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                     const float score0 = resultHost0[depthBase + n];
                     const float score1 = resultHost1[depthBase + n];
 
-                    if (!std::isfinite(score0) || !std::isfinite(score1))
-                        continue;
+                    if (!std::isfinite(score0) || !std::isfinite(score1)) continue;
 
-                    // Original photometric agreement between the two targets.
                     const float photoScore = 0.5f * (score0 + score1);
 
-                    // Regularized score used only for hypothesis selection.
-                    const float regularizedScore =
-                        photoScore - depthPenalty;
+                    const float regularizedScore = photoScore - depthPenalty;
+
+					float normalCamDot = 0.f;
 
                     if (regularizedScore > bestRegularizedScore)
                     {
@@ -303,23 +265,16 @@ std::vector<ResultPoint> ZNCCProcessor::computeZNCCDualTargets(
                 }
             }
 
-            // Reject points with no valid hypothesis.
-            if (!std::isfinite(bestRegularizedScore))
-                continue;
+            if (!std::isfinite(bestRegularizedScore)) continue;
 
-            // Test the original photometric score, not the regularized score.
-            if (bestPhotoScore < znccThreshold)
-                continue;
+            if (bestPhotoScore < znccThreshold) continue;
 
             ResultPoint rp;
             rp.x = frontierPoints[f].x;
             rp.y = frontierPoints[f].y;
-
             rp.depth = frontierPoints[f].depth + depthSteps[bestDepthIdx];
-
             rp.znccScore = bestPhotoScore;
             rp.normal = reconstruct_normal(f, bestNormalIdx);
-
             consensusResults.push_back(rp);
         }
 

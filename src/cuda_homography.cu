@@ -2,19 +2,19 @@
 #include "../include/helper_math.h"
 #include "../include/cuda_homography.h"
 
-// calculate the total size of constant memory used sometime
+__constant__ NormalPermutation normalPermutations[16];
+__constant__ int windowRadius;
+__constant__ size_t refPitch;
+
 __constant__ float H0_0[9];                         // K2 * R * K1^-1  << this should be H0_0
 __constant__ float K1inv_0[9];                      // K1^-1
 __constant__ float e2_0[3];                         // K2 * t
-__constant__ int windowRadius;
-__constant__ NormalPermutation normalPermutations[16];
-__constant__ size_t refPitch;
 __constant__ size_t targetPitch;
 
 // new constants for second target camera
 __constant__ float H0_1[9];                         // second target: K2' * R' * K1^-1 << this should be H0_1
-__constant__ float K1inv_1[9];                     // (optional) if a different K1inv needed; typically same as K1inv
-__constant__ float e2_1[3];                       // K2' * t'
+__constant__ float K1inv_1[9];                      // (optional) if a different K1inv needed; typically same as K1inv
+__constant__ float e2_1[3];                         // K2' * t'
 __constant__ size_t target2Pitch;
 
 
@@ -27,7 +27,6 @@ inline float3 matmul3x3_point(const float* mat, float3 p) {
         mat[6] * p.x + mat[7] * p.y + mat[8] * p.z
     );
 }
-
 
 // standard homography transformed for precalculated H0, K1inv, e
 __device__
@@ -197,25 +196,17 @@ void evaluateZNCC_DualTargets(
 	// maybe setting the initial normals to slightly off-axis would be better than this?
     // result normals on dense clouds sometimes look like "wet hair" instead of spikes
     // commenting this out breaks the reconstruction 
-    /*if (fabsf(parentNormal.z) < 0.999f) {
+    /*if (fabsf(parentNormal.z) < 0.999f)
         reference = make_float3(0.0f, 0.0f, 1.0f);
-    }
-    else {
-        reference = make_float3(0.0f, 1.0f, 0.0f);
-    }*/
-
-    if (fabsf(parentNormal.x) <= fabsf(parentNormal.y) && fabsf(parentNormal.x) <= fabsf(parentNormal.z))
-    {
-        reference = make_float3(1.0f, 0.0f, 0.0f);
-    }
-    else if (fabsf(parentNormal.y) <= fabsf(parentNormal.z))
-    {
-        reference = make_float3(0.0f, 1.0f, 0.0f);
-    }
     else
-    {
-        reference = make_float3(0.0f, 0.0f, 1.0f);
-    }
+        reference = make_float3(0.0f, 1.0f, 0.0f);*/
+
+    if (fabsf(parentNormal.x) <= fabsf(parentNormal.y) && fabsf(parentNormal.x) <= fabsf(parentNormal.z))    
+        reference = make_float3(1.0f, 0.0f, 0.0f);    
+    else if (fabsf(parentNormal.y) <= fabsf(parentNormal.z))    
+        reference = make_float3(0.0f, 1.0f, 0.0f);    
+    else    
+        reference = make_float3(0.0f, 0.0f, 1.0f);    
 
     parentTangent = normalize(cross(reference, parentNormal));
     parentBitangent = normalize(cross(parentNormal, parentTangent));
@@ -297,40 +288,15 @@ void evaluateZNCC_DualTargets(
         }
     }
 
-    const int count = windowSize * windowSize;
-
-    // finish ZNCC for both targets; finishZNCC expects full ref sums, so we pass them accordingly
-    float zncc0;
-    {
-        float mean_ref = sum_ref / (float)count;
-        float mean_target = sum_target0 / (float)count;
-        float var_ref = sum_sq_ref / (float)count - mean_ref * mean_ref;
-        float var_target = sum_sq_target0 / (float)count - mean_target * mean_target;
-        float cov = sum_product0 / (float)count - mean_ref * mean_target;
-        var_ref = max(1e-6f, var_ref);
-        var_target = max(1e-6f, var_target);
-        zncc0 = cov / sqrtf(var_ref * var_target);
-    }
-
-    float zncc1;
-    {
-        float mean_ref = sum_ref / (float)count;
-        float mean_target = sum_target1 / (float)count;
-        float var_ref = sum_sq_ref / (float)count - mean_ref * mean_ref;
-        float var_target = sum_sq_target1 / (float)count - mean_target * mean_target;
-        float cov = sum_product1 / (float)count - mean_ref * mean_target;
-        var_ref = max(1e-6f, var_ref);
-        var_target = max(1e-6f, var_target);
-        zncc1 = cov / sqrtf(var_ref * var_target);
-    }
+	const int count = windowSize * windowSize;    // move to __constant__ 
 
     int resultIdx =
         frontierIndex * (depthNSteps * normalNSteps)
         + depthIndex * normalNSteps
-        + normalIndex;
+        + normalIndex;    
 
-    result0[resultIdx] = zncc0;
-    result1[resultIdx] = zncc1;
+    result0[resultIdx] = finishZNCC(sum_ref,  sum_target0, sum_sq_ref, sum_sq_target0, sum_product0, count);
+    result1[resultIdx] = finishZNCC(sum_ref, sum_target1, sum_sq_ref, sum_sq_target1, sum_product1, count);
 }
 
 void launchEvaluateZNCC_DualTargets(const float* refImg,
@@ -422,7 +388,7 @@ void checkCudaError(const char* message) {
     }
 }
 
-// old single cam kernal
+// old single cam kernal DO NOT REMOVE !!!
 /*__global__
 void evaluateZNCC(
     const float* refImg,
