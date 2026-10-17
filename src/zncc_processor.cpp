@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <utility>
 
-constexpr float znccThreshold = 0.75f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
-constexpr int localDepthWindowOffset = 3; // huh, more filternig results in more points
+constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+constexpr int localDepthWindowOffset = 3; 
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
     : imgWidth(imgWidth), imgHeight(imgHeight), windowRadius(windowRadius) {

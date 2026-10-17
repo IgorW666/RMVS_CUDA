@@ -18,14 +18,16 @@
 
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
-const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
-const int DEPTH_STEPS = 16;                     // originally 16. Can be increased but not sure if it changes anything yet
-const int NORMAL_PERMUTATIONS = 16;
-const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {2.f, 7}, {4.f, 8} };
-const float DEPTH_STEP_SIZE = 0.01f;            // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const float DEPTH_STEP_SIZE = 0.005f;            // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
+const float NORMAL_DOT_THRESHOLD = 0.5f;        // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
+const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
+const int DEPTH_STEPS = 16;                     // originally 16
+const int NORMAL_PERMUTATIONS = 16;             // originally 16
+const int REFINE_STEPS = 1;                     // number of refinement steps after the main propagation
 const int FRONTIER_MIN_SIZE = 100;              // early stop except 1 frontier
 const int MAX_ITERATIONS = 1000;
+const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {2.f, 7}, {4.f, 8} };
 
 // 16 : {{4.f, 7}, {14.f, 8}}
 // 16 : {{3.f, 4}, {8.f, 5}, {18.f, 6}}
@@ -43,21 +45,22 @@ std::unordered_map<int, std::unordered_map<int, float>> calculateCameraAxisAngle
 std::vector<int> findBestCamerasByAngleGaussian(const int& refCamIdx, const int& NCams, const std::unordered_map<int, std::unordered_map<int, float>>& cameraAngle, const float& bestCameraAngleDegrees);
 
 // TODO:
-// - add color to dense point clouds
-// - add more anlgles to normal permutations DONE
-// - add normal vector dot product during propagation to filter out "impossible" normals
+// - add color to dense point clouds MEH
+// - add more angles to normal permutations DONE
+// - add normal vector dot product during propagation to filter out "impossible" normals DONE
 // - try different zncc aggregation methods
 // - switch to disparity?
-// - find the pdf with "chessboard pattern propagation" or "red-black" !!! (gipuma?) << https://openaccess.thecvf.com/content_iccv_2015/papers/Galliani_Massively_Parallel_Multiview_ICCV_2015_paper.pdf doesn't really solve anything
+// - find the pdf with "chessboard pattern propagation" or "red-black" (gipuma?) << https://openaccess.thecvf.com/content_iccv_2015/papers/Galliani_Massively_Parallel_Multiview_ICCV_2015_paper.pdf doesn't really solve anything
 // - precompute normals in the sparse point cloud DONE-ish
+// - add refine steps
 
 int main() {    
 
-    std::string folderPath = "data\\japcat9\\";
+    std::string folderPath = "data\\dFountain\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\japcat9\\japcat.csv");
+        cameras = cameraLoader.loadFromCSV("data\\dFountain\\fountain.csv");
     }
 
     if (cameras.size() < 3) {
@@ -104,9 +107,9 @@ int main() {
         float avgDepth = 0.0f;
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\japcat9\\japcat.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\dFountain\\fountain.xyz", cameras[refCamIdx], refImageGPU, true);
 
-        float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
+        //float calculatedDepthStepSize = DEPTH_STEP_SIZE; // was (avgDepth * DEPTH_STEP_SIZE) but was unreliable << depth is not linear
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
@@ -114,7 +117,7 @@ int main() {
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
-        std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
+        std::vector<float> depthSteps = generateDepthSteps(DEPTH_STEP_SIZE, DEPTH_STEPS);
 
         HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
         HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
@@ -123,13 +126,10 @@ int main() {
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
         processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
-        //cv::Mat depthMapHost = refDepthNormals.depthMap.clone();   // why am I using clones ?
-		//cv::Mat normalMapHost = refDepthNormals.normalMap.clone(); // why am I using clones ? + the depth map is not used for anything other then debug
         cv::Mat visitedHost = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
-        frontierPoints.reserve(1024);           
-        //cv::Vec3f initialNormal = cv::Vec3f(0.f, 0.f, 1.0f); // 0,0,1 turns normals away from cam
+        frontierPoints.reserve(1024);        
         cv::Vec3f initialNormal = cv::Vec3f(0.1f, 0.f, -0.9f); // tilted normal leaves the normal facing the cam 
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
@@ -186,6 +186,12 @@ int main() {
             std::vector<FrontierPoint> nextFrontier;
             nextFrontier.reserve(results.size() * 8);
             for (const auto& rp : results) {
+
+                float parentNormalCamDot = rp.normal.z * -1.f; // cam dir is (0,0,-1) so dot can be shortened
+				if (parentNormalCamDot < NORMAL_DOT_THRESHOLD) { // keep only normals that are facing the camera at max ~60deg
+                    continue;
+				}
+
                 for (int dy = -1; dy <= 1; ++dy) {
                     for (int dx = -1; dx <= 1; ++dx) {
                         if (dx == 0 && dy == 0) continue;
@@ -193,7 +199,7 @@ int main() {
                         int ny = rp.y + dy;
                         if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;
                         if (visitedHost.at<uchar>(ny, nx) == 0) {
-                            float normalCamDot; // normal to camera dot product should reflect less then ~60deg (0.5)     float dot = normal[0] * 0.f + normal[1] * 0.f + normal[2] * -1.f; // or 1.f
+                            
                             FrontierPoint child;
                             child.x = nx;
                             child.y = ny;
@@ -219,7 +225,7 @@ int main() {
 
         cv::destroyAllWindows();        
 
-        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
+        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(DEPTH_STEP_SIZE) + ".xyz";
         saveNormalsAsXyz(pointCloudFilename, refDepthNormals.normalMap, refDepthNormals.depthMap, cameras[refCamIdx]);
 
         if (SAVE_DEBUG_DATA) {
