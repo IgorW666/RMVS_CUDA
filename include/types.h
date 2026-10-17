@@ -34,9 +34,9 @@ struct HomographyParams {
 };
 
 // logic not yet implemented
-struct FolderData {
-    std::string inputFolder;
-    std::string csvFile;    
-    std::string sparseCloudFile;
-	std::vector<std::string> imageFiles;
-};
+//struct FolderData {
+//    std::string inputFolder;
+//    std::string csvFile;    
+//    std::string sparseCloudFile;
+//	std::vector<std::string> imageFiles;
+//};
