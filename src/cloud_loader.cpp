@@ -8,11 +8,11 @@
 
 const float CloudLoader::NORMAL_FACING_THRESHOLD = 0.5f;  // cos(60 degrees) ~ 0.5
 
-cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData, float& avgDepth) {
-    return loadXYZToDepthMap(filename, cam, imageData.width, imageData.height, avgDepth);
+cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData) {
+    return loadXYZToDepthMap(filename, cam, imageData.width, imageData.height);
 }
 
-cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height, float& avgDepth) {
+cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height) {
     if (width <= 0 || height <= 0) {
         throw std::invalid_argument("width and height must be positive");
     }
@@ -20,7 +20,9 @@ cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera
     std::vector<float> depthBuffer(static_cast<size_t>(width) * static_cast<size_t>(height),
         std::numeric_limits<float>::infinity());
 
-    avgDepth = 0.0f;
+    avgDepth_ = 0.0f;
+    minDepth_ = std::numeric_limits<float>::max();
+    maxDepth_ = std::numeric_limits<float>::lowest();
     cv::Mat Kd;
     if (cam.intrinsics.camera_matrix.type() == CV_64F) Kd = cam.intrinsics.camera_matrix;
     else cam.intrinsics.camera_matrix.convertTo(Kd, CV_64F);
@@ -59,10 +61,14 @@ cv::Mat CloudLoader::loadXYZToDepthMap(const std::string& filename, const Camera
             if (std::isfinite(d)) {
                 depthSum += d;
                 ++depthCount;
+                minDepth_ = std::min(minDepth_, d);
+                maxDepth_ = std::max(maxDepth_, d);
             }
         }
     }
-    avgDepth = (depthCount > 0) ? (depthSum / static_cast<float>(depthCount)) : 0.0f;
+    avgDepth_ = (depthCount > 0) ? (depthSum / static_cast<float>(depthCount)) : 0.0f;
+    minDepth_ = (depthCount > 0) ? minDepth_ : 0.0f;
+    maxDepth_ = (depthCount > 0) ? maxDepth_ : 0.0f;
     return depthMap;
 }
 
@@ -70,8 +76,7 @@ DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& fil
     return loadXYZToDepthMapWithNormals(filename, cam, imageData.width, imageData.height, precomputeNormals);
 }
 
-DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& filename, const Camera& cam,
-    int width, int height, bool precomputeNormals) {
+DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& filename, const Camera& cam, int width, int height, bool precomputeNormals) {
     if (width <= 0 || height <= 0) {
         throw std::invalid_argument("width and height must be positive");
     }
@@ -95,11 +100,11 @@ DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& fil
     DepthNormalData result;
     result.depthMap = cv::Mat(height, width, CV_32FC1, 0.0f);
     result.normalMap = cv::Mat(height, width, CV_32FC3, cv::Vec3f(0.0f, 0.0f, 0.0f));
-    result.avgDepth = 0.0f;
+    //result.avgDepth = 0.0f;
 
     if (survivingPoints.empty()) {
         return result;
-    }
+    }	
 
     std::vector<cv::Vec3f> normalMap(survivingPoints.size());
 
@@ -137,7 +142,10 @@ DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& fil
         }
     }
 
-    float depthSum = 0.0f;
+    float depthSum = 0.0f;      
+    float minDepth = std::numeric_limits<float>::max();
+    float maxDepth = std::numeric_limits<float>::lowest();
+	std::vector<float> depthValues; // for median
     size_t validCount = 0;
 
     for (size_t i = 0; i < survivingPoints.size(); ++i) {
@@ -159,10 +167,19 @@ DepthNormalData CloudLoader::loadXYZToDepthMapWithNormals(const std::string& fil
         }
 
         depthSum += pt.depth;
+        minDepth = std::min(minDepth, pt.depth);
+        maxDepth = std::max(maxDepth, pt.depth);
+		depthValues.push_back(pt.depth);
         ++validCount;
     }
 
-    result.avgDepth = (validCount > 0) ? (depthSum / static_cast<float>(validCount)) : 0.0f;
+    minDepth_ = minDepth;
+    maxDepth_ = maxDepth;
+    avgDepth_ = (validCount > 0) ? (depthSum / static_cast<float>(validCount)) : 0.0f;
+     
+	int middleIndex = depthValues.size() / 2;
+
+    medianDepth_ = (depthValues.empty()) ? 0.0f : (depthValues.size() % 2 == 0) ? (depthValues[middleIndex - 1] + depthValues[middleIndex]) / 2.0f : depthValues[middleIndex];
 
     return result;
 }

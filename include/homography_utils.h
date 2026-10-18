@@ -1,9 +1,13 @@
 #pragma once
 #include "types.h"
 #include <opencv2/opencv.hpp>
+//#include <opencv2/calib3d.hpp>
+//#include <opencv2/core.hpp>
 #include <vector>
 #include <unordered_map>
 #include <cmath>
+#include <limits>
+
 
 
 HomographyParams calcHomographyParamsW2C( // finally...
@@ -128,4 +132,95 @@ std::vector<int> findBestCamerasByAngleGaussian( // don't really need gaussian d
     for (int i = 0; i < NCams; i++) ret.emplace_back(candidates[i].second);
 
     return ret;
+}
+
+
+
+double calcDepthStepForPixelShift(
+    const Camera& refCam,
+    const Camera& targetCam,
+    double medianDepth,
+    const cv::Point2d& refPixel,
+    double desiredPixelShift = 1.0)
+{
+    if (!std::isfinite(medianDepth) || medianDepth <= 0.0 ||
+        !std::isfinite(desiredPixelShift) || desiredPixelShift <= 0.0)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const cv::Mat& Kr = refCam.intrinsics.camera_matrix;
+    const cv::Mat& Rt = targetCam.extrinsics.rotation;
+    const cv::Mat& Rr = refCam.extrinsics.rotation;
+    const cv::Mat& tr = refCam.extrinsics.translation;
+    const cv::Mat& tt = targetCam.extrinsics.translation;
+
+    // Reference-camera ray: normalize so ray.z == 1.
+    cv::Mat pixel = (cv::Mat_<double>(3, 1) <<
+        refPixel.x, refPixel.y, 1.0);
+
+    cv::Mat ray = Kr.inv() * pixel;
+    const double rayZ = ray.at<double>(2, 0);
+
+    if (!std::isfinite(rayZ) || std::abs(rayZ) < 1e-12)
+        return std::numeric_limits<double>::quiet_NaN();
+
+    ray /= rayZ;
+
+    // Project a point at reference-camera Z depth into the target image.
+    auto projectAtDepth = [&](double depth, cv::Point2d& projected) -> bool
+        {
+            cv::Mat Xr = ray * depth;
+
+            // Assumes world-to-camera extrinsics: Xc = R * Xw + t.
+            cv::Mat Xw = Rr.t() * (Xr - tr);
+            cv::Mat Xt = Rt * Xw + tt;
+
+            if (!std::isfinite(Xt.at<double>(2, 0)) ||
+                Xt.at<double>(2, 0) <= 1e-9)
+            {
+                return false;
+            }
+
+            std::vector<cv::Point3d> objectPoints = {
+                cv::Point3d(
+                    Xt.at<double>(0, 0),
+                    Xt.at<double>(1, 0),
+                    Xt.at<double>(2, 0))
+            };
+
+            std::vector<cv::Point2d> imagePoints;
+
+            cv::projectPoints(
+                objectPoints,
+                cv::Vec3d(0.0, 0.0, 0.0),
+                cv::Vec3d(0.0, 0.0, 0.0),
+                targetCam.intrinsics.camera_matrix,
+                targetCam.intrinsics.distortion,
+                imagePoints);
+
+            projected = imagePoints[0];
+
+            return std::isfinite(projected.x) &&
+                std::isfinite(projected.y);
+        };
+
+    // Estimate local image displacement per unit of reference-camera depth.
+    const double epsilon = std::max(1e-6, medianDepth * 1e-5);
+
+    cv::Point2d p0, p1;
+
+    if (!projectAtDepth(medianDepth, p0) ||
+        !projectAtDepth(medianDepth + epsilon, p1))
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    const double pixelDisplacement = cv::norm(p1 - p0);
+    const double pixelsPerDepth = pixelDisplacement / epsilon;
+
+    if (!std::isfinite(pixelsPerDepth) || pixelsPerDepth < 1e-12)
+        return std::numeric_limits<double>::infinity();
+
+    return desiredPixelShift / pixelsPerDepth;
 }

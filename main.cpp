@@ -15,15 +15,17 @@
 #include <cstdio>
 #include <unordered_map>
 
+const bool DBG_SINGLE_CAMERA = true;            // for debugging, only use 1 camera
+const bool SHOW_PROPAGATION_PREVIEW = true;     // shows the propagation frontier as it grows
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
-const float DEPTH_STEP_SIZE = 0.01f;            // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+//const float DEPTH_STEP_SIZE = 0.01f;             // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
 const float BEST_CAMERA_ANGLE_DEGREES = 30.f;   // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 const float NORMAL_DOT_THRESHOLD = 0.5f;        // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
 const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16
 const int NORMAL_PERMUTATIONS = 16;             // originally 16
-const int REFINE_STEPS = 1;                     // number of refinement steps after the main propagation
+//const int REFINE_STEPS = 1;                   // number of refinement steps after the main propagation
 const int FRONTIER_MIN_SIZE = 100;              // early stop except 1st frontier
 const int MAX_ITERATIONS = 1000;                // adjust for image size
 const int TCAMS = 2;                            // avoid magic numbers
@@ -50,11 +52,11 @@ const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, 
 
 int main() {    
 
-    std::string folderPath = "data\\skull\\";
+    std::string folderPath = "data\\lewp1\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\skull\\skull.csv");
+        cameras = cameraLoader.loadFromCSV("data\\lewp1\\lewp1.csv");
     }
 
     if (cameras.size() < 3) {
@@ -73,7 +75,9 @@ int main() {
         normalPermGen.saveNormalsAsXyz("normals_debug.xyz", normalPermutations);
     }
 
-    for (int refCamIdx = 0; refCamIdx < static_cast<int>(cameras.size()); ++refCamIdx) {
+	const int numCameras = DBG_SINGLE_CAMERA ? 1 : static_cast<int>(cameras.size());
+
+    for (int refCamIdx = 0; refCamIdx < numCameras; ++refCamIdx) {
 
         auto bestCameras = findBestCamerasByAngleGaussian(refCamIdx, TCAMS, cameraAngle, BEST_CAMERA_ANGLE_DEGREES);
 
@@ -98,10 +102,25 @@ int main() {
         ImageData targetImage0GPU = imageHandler.loadImageToGPU(targetImgPth0);
         ImageData targetImage1GPU = imageHandler.loadImageToGPU(targetImgPth1);
 
-        float avgDepth = 0.0f;
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\skull\\skull.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lewp1\\lewp1.xyz", cameras[refCamIdx], refImageGPU, true);
+
+        float medianDepth = cloudLoader.getMedianDepth();
+
+		{   // now figure out how to calculate DEPTH_STEP_SIZE from those:
+			float avgDepth = cloudLoader.getAvgDepth();
+			float minDepth = cloudLoader.getMinDepth();
+			float maxDepth = cloudLoader.getMaxDepth();
+			
+			std::cout << "STATS: depth for camera " << refCamIdx << "\n avg=" << avgDepth << "\n min=" << minDepth << "\n max=" << maxDepth << "\n median=" << medianDepth << "\n";
+
+            float testDepthStep = medianDepth * 0.0001;
+			std::cout << "TEST: medianDepth = " << testDepthStep << "\n";
+        }
+
+		float calculatedDepthStepSize = cloudLoader.getMedianDepth() * 0.0001f;
+
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
@@ -109,7 +128,7 @@ int main() {
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
-        std::vector<float> depthSteps = generateDepthSteps(DEPTH_STEP_SIZE, DEPTH_STEPS);
+        std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
 
         HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
         HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
@@ -201,7 +220,7 @@ int main() {
 
             frontierPoints.swap(nextFrontier);
 
-            if (true) { // i guess this isn't good for performance but the whole program is in debug state anyway
+            if (SHOW_PROPAGATION_PREVIEW) { // i guess this isn't good for performance but the whole program is in debug state anyway
                 cv::Mat progressImage;
                 cv::resize(refDepthNormals.depthMap, progressImage, cv::Size(), progressImageScale, progressImageScale, cv::INTER_NEAREST);
                 progressImage.convertTo(progressImage, CV_8U, 255.f, 0.0f);
@@ -212,7 +231,7 @@ int main() {
 
         cv::destroyAllWindows();        
 
-        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(DEPTH_STEP_SIZE) + ".xyz";
+        std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
         saveCloudsAsXyz(pointCloudFilename, refDepthNormals.normalMap, refDepthNormals.depthMap, cameras[refCamIdx], true);
 
         if (SAVE_DEBUG_DATA) {

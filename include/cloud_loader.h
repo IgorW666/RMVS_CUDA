@@ -17,7 +17,7 @@
 struct DepthNormalData {
     cv::Mat depthMap;
     cv::Mat normalMap;
-    float avgDepth;
+    //float avgDepth;
 };
 
 /**
@@ -38,14 +38,19 @@ public:
     CloudLoader& operator=(const CloudLoader&) = delete;
 
     // Load depth map only (backward compatible)
-    cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData, float& avgDepth);
-    cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height, float& avgDepth);
+    cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, const ImageData& imageData);
+    cv::Mat loadXYZToDepthMap(const std::string& filename, const Camera& cam, int width, int height);
 
     // Load depth map with optional normal computation
     DepthNormalData loadXYZToDepthMapWithNormals(const std::string& filename, const Camera& cam,
         const ImageData& imageData, bool precomputeNormals = false);
     DepthNormalData loadXYZToDepthMapWithNormals(const std::string& filename, const Camera& cam,
         int width, int height, bool precomputeNormals = false);
+
+	float getAvgDepth() const { return avgDepth_; }
+	float getMinDepth() const { return minDepth_; }
+	float getMaxDepth() const { return maxDepth_; }
+	float getMedianDepth() const { return medianDepth_; }
 
 private:
     struct SurvivingPoint {
@@ -68,4 +73,10 @@ private:
 
     static const int KNN_K = 6;
     static const float NORMAL_FACING_THRESHOLD;  // cos(60 degrees)
+
+private:
+	float avgDepth_ = -1.0f;
+	float medianDepth_ = -1.0f;
+	float minDepth_ = std::numeric_limits<float>::max();
+	float maxDepth_ = std::numeric_limits<float>::lowest();
 };
