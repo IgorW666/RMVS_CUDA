@@ -25,7 +25,7 @@ const float NORMAL_DOT_THRESHOLD = 0.5f;        // dot product of normal and cam
 const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                     // originally 16
 const int NORMAL_PERMUTATIONS = 16;             // originally 16
-//const int REFINE_STEPS = 1;                   // number of refinement steps after the main propagation
+const int REFINE_ITERATIONS = 2;                // total number of refinement steps
 const int FRONTIER_MIN_SIZE = 100;              // early stop except 1st frontier
 const int MAX_ITERATIONS = 1000;                // adjust for image size
 const int TCAMS = 2;                            // avoid magic numbers
@@ -52,11 +52,11 @@ const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, 
 
 int main() {    
 
-    std::string folderPath = "data\\lewp1\\";
+    std::string folderPath = "data\\lew\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\lewp1\\lewp1.csv");
+        cameras = cameraLoader.loadFromCSV("data\\lew\\lew.csv");
     }
 
     if (cameras.size() < 3) {
@@ -104,27 +104,17 @@ int main() {
 
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lewp1\\lewp1.xyz", cameras[refCamIdx], refImageGPU, true);
-
-        float medianDepth = cloudLoader.getMedianDepth();
-
-		{   // now figure out how to calculate DEPTH_STEP_SIZE from those:
-			float avgDepth = cloudLoader.getAvgDepth();
-			float minDepth = cloudLoader.getMinDepth();
-			float maxDepth = cloudLoader.getMaxDepth();
-			
-			std::cout << "STATS: depth for camera " << refCamIdx << "\n avg=" << avgDepth << "\n min=" << minDepth << "\n max=" << maxDepth << "\n median=" << medianDepth << "\n";
-
-            float testDepthStep = medianDepth * 0.0001;
-			std::cout << "TEST: medianDepth = " << testDepthStep << "\n";
-        }
-
-		float calculatedDepthStepSize = cloudLoader.getMedianDepth() * 0.0001f;
-
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImageGPU, true);
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
         const double progressImageScale = 900.f / float(std::max(IMG_WIDTH, IMG_HEIGHT));
+
+        const float medianDepth = cloudLoader.getMedianDepth();
+
+		float calculatedDepthStepSize = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx0], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), 1.f);
+
+		std::cout << "Calculated depth step size: " << calculatedDepthStepSize << std::endl;        
 
         ZNCCProcessor processor(IMG_WIDTH, IMG_HEIGHT, WINDOW_RADIUS);
 
@@ -137,10 +127,18 @@ int main() {
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
         processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
 
+        // refine begin
+
+        size_t refineStep = 0;
+
         cv::Mat visitedHost = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_8U);
 
         std::vector<FrontierPoint> frontierPoints;
-        frontierPoints.reserve(1024);        
+
+		const int nonZeroCount = cv::countNonZero(refDepthNormals.depthMap > 0.f);
+
+        frontierPoints.reserve(nonZeroCount);
+               
         cv::Vec3f initialNormal = cv::Vec3f(0.1f, 0.f, -0.9f); // tilted normal leaves the normal facing the cam 
         for (int y = 0; y < IMG_HEIGHT; ++y) {
             for (int x = 0; x < IMG_WIDTH; ++x) {
@@ -157,9 +155,10 @@ int main() {
                     visitedHost.at<uchar>(y, x) = 1;                    
                 }
             }
-        }
+        }        
 
         size_t iteration = 0;        
+        
 
         while (!frontierPoints.empty() && iteration < MAX_ITERATIONS && frontierPoints.size() > FRONTIER_MIN_SIZE) {
             ++iteration;
@@ -229,7 +228,9 @@ int main() {
             }
         }
 
-        cv::destroyAllWindows();        
+        cv::destroyAllWindows();     
+
+        // refine end
 
         std::string pointCloudFilename = "clouds\\cloud_" + std::to_string(refCamIdx) + "_w" + std::to_string(1 + WINDOW_RADIUS * 2) + "_c" + std::to_string(8) + "_dss" + std::to_string(calculatedDepthStepSize) + ".xyz";
         saveCloudsAsXyz(pointCloudFilename, refDepthNormals.normalMap, refDepthNormals.depthMap, cameras[refCamIdx], true);

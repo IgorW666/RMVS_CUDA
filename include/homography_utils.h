@@ -167,6 +167,8 @@ double calcDepthStepForPixelShift(
 
     ray /= rayZ;
 
+	cv::Mat zeroDistortion = cv::Mat::zeros(5, 1, CV_64F);
+
     // Project a point at reference-camera Z depth into the target image.
     auto projectAtDepth = [&](double depth, cv::Point2d& projected) -> bool
         {
@@ -196,7 +198,7 @@ double calcDepthStepForPixelShift(
                 cv::Vec3d(0.0, 0.0, 0.0),
                 cv::Vec3d(0.0, 0.0, 0.0),
                 targetCam.intrinsics.camera_matrix,
-                targetCam.intrinsics.distortion,
+                zeroDistortion,
                 imagePoints);
 
             projected = imagePoints[0];
