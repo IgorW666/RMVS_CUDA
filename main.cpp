@@ -52,11 +52,11 @@ const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, 
 
 int main() {    
 
-    std::string folderPath = "data\\lew\\";
+    std::string folderPath = "data\\japcat9\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\lew\\lew.csv");
+        cameras = cameraLoader.loadFromCSV("data\\japcat9\\japcat.csv");
     }
 
     if (cameras.size() < 3) {
@@ -104,7 +104,7 @@ int main() {
 
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\lew\\lew.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\japcat9\\japcat.xyz", cameras[refCamIdx], refImageGPU, true);
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
