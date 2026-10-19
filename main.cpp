@@ -19,7 +19,7 @@ const bool DBG_SINGLE_CAMERA = true;            // for debugging, only use 1 cam
 const bool SHOW_PROPAGATION_PREVIEW = true;     // shows the propagation frontier as it grows
 const bool SAVE_DEBUG_DATA = false;
 const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
-//const float DEPTH_STEP_SIZE = 0.01f;             // there is a sweet spot for this. If clouds look "stepped" its not the sweet spot
+const float DEPTH_STEP_SIZE_PX = 0.5f;          // no more guessing, step size in refCam pixels
 const float BEST_CAMERA_ANGLE_DEGREES = 30.f;   // dont know yet. in theory this should be 25-30deg but then in another pdf it said 5-30 
 const float NORMAL_DOT_THRESHOLD = 0.5f;        // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
 const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
@@ -112,7 +112,10 @@ int main() {
 
         const float medianDepth = cloudLoader.getMedianDepth();
 
-		float calculatedDepthStepSize = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx0], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), 1.f);
+		const float calculatedDepthStepSizeRef0 = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx0], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), DEPTH_STEP_SIZE_PX);
+		const float calculatedDepthStepSizeRef1 = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx1], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), DEPTH_STEP_SIZE_PX);
+
+		float calculatedDepthStepSize = std::min(calculatedDepthStepSizeRef0, calculatedDepthStepSizeRef1); // maybe avg ?
 
 		std::cout << "Calculated depth step size: " << calculatedDepthStepSize << std::endl;        
 
@@ -121,11 +124,11 @@ int main() {
         std::vector<float> depthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
 
         HomographyParams hp0 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx0]);
-        HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);
+        HomographyParams hp1 = calcHomographyParamsW2C(cameras[refCamIdx], cameras[targetIdx1]);        
 
         processor.setCameraMatrices(hp0.H0.data(), hp0.K1inv.data(), hp0.e2.data());
         processor.setCameraMatricesSecond(hp1.H0.data(), hp1.K1inv.data(), hp1.e2.data());
-        processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));
+        processor.setNormalPermutations(normalPermutations.data(), static_cast<int>(normalPermutations.size()));        
 
         // refine begin
 
@@ -157,8 +160,7 @@ int main() {
             }
         }        
 
-        size_t iteration = 0;        
-        
+        size_t iteration = 0;               
 
         while (!frontierPoints.empty() && iteration < MAX_ITERATIONS && frontierPoints.size() > FRONTIER_MIN_SIZE) {
             ++iteration;
