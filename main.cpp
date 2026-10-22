@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <unordered_map>
 
+// i should probably make some Params structures
 const bool DBG_SINGLE_CAMERA = false;               // for debugging, only use 1 camera
 const bool SHOW_PROPAGATION_PREVIEW = true;         // shows the propagation frontier as it grows
 const bool SAVE_DEBUG_DATA = true;                  
@@ -122,7 +123,7 @@ void reprojectViewToView(
 
             const cv::Mat normalDst = R_srcToDst * normalSrc;
 
-            cv::Vec3f dstNormal(
+            cv::Vec3f dstNormal(                                  // this could be shortened to -normalDst.at<double>(2, 0)
                 static_cast<float>(normalDst.at<double>(0, 0)),
                 static_cast<float>(normalDst.at<double>(1, 0)),
                 static_cast<float>(normalDst.at<double>(2, 0)));
@@ -132,7 +133,7 @@ void reprojectViewToView(
                 dstNormal[1] * Xdst.at<double>(1, 0) +
 				dstNormal[2] * Xdst.at<double>(2, 0); 
 
-            if (dotProduct < 0.5f) {
+            if (dotProduct < 0.5f) { // NORMAL_DOT_THRESHOLD ?
 				continue; // skip normals that are facing away from the camera
 			}   
 
@@ -149,11 +150,11 @@ void reprojectViewToView(
 
 int main() {    
 
-    std::string folderPath = "data\\japcatFull\\";
+    std::string folderPath = "data\\crazy\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\japcatFull\\japcat.csv");
+        cameras = cameraLoader.loadFromCSV("data\\crazy\\crazy.csv");
     }
 
     if (cameras.size() < 3) {
@@ -206,7 +207,7 @@ int main() {
 
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\japcatFull\\japcat.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\crazy\\crazy.xyz", cameras[refCamIdx], refImageGPU, true);
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
@@ -274,8 +275,6 @@ int main() {
             }
         }
 
-        // 
-
         size_t iteration = 0;
 
         while (!frontierPoints.empty() && iteration < MAX_ITERATIONS && frontierPoints.size() > FRONTIER_MIN_SIZE) {
@@ -304,9 +303,8 @@ int main() {
             for (const auto& rp : results) {
                 if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
                     refDepthNormals.depthMap.at<float>(rp.y, rp.x) = rp.depth;
-                    refDepthNormals.normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
-                    //visitedHost.at<uchar>(rp.y, rp.x) = 1;
-					scoreMapHost.at<float>(rp.y, rp.x) = rp.znccScore; // store the score for later analysis
+                    refDepthNormals.normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);                    
+					scoreMapHost.at<float>(rp.y, rp.x) = rp.znccScore;
                 }
             }
 
@@ -323,17 +321,14 @@ int main() {
                     if (offset.first == 0 && offset.second == 0) continue; // thats not neede anymore
                     int nx = rp.x + offset.first;
                     int ny = rp.y + offset.second;
-                    if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;
-                    //if (visitedHost.at<uchar>(ny, nx) == 0) {
+                    if (nx < 0 || nx >= IMG_WIDTH || ny < 0 || ny >= IMG_HEIGHT) continue;                    
 					if (scoreMapHost.at<float>(ny, nx) <= 0.0f) { // only propagate to uninitialized pixels
                         FrontierPoint child;
                         child.x = nx;
                         child.y = ny;
                         child.depth = rp.depth;
                         child.normal = rp.normal;
-                        nextFrontier.push_back(child);
-                        //visitedHost.at<uchar>(ny, nx) = 1;
-						//scoreMapHost.at<float>(ny, nx) = rp.znccScore; // propagate the score to the child
+                        nextFrontier.push_back(child);                        
                         scoreMapHost.at<float>(ny, nx) = WINDOW_SCORE_THRESHOLD; // propagate the base score
                     }
                 }
