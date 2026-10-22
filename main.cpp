@@ -15,21 +15,22 @@
 #include <cstdio>
 #include <unordered_map>
 
-const bool DBG_SINGLE_CAMERA = false;           // for debugging, only use 1 camera
-const bool SHOW_PROPAGATION_PREVIEW = true;     // shows the propagation frontier as it grows
-const bool SAVE_DEBUG_DATA = true;
-const bool REMOVE_SFM_POINTS = true;            // keep that on !!!
-const float DEPTH_STEP_SIZE_PX = 0.25f;         // no more guessing, step size in refCam pixels
-const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;  // 17.5 is ok
-const float NORMAL_DOT_THRESHOLD = 0.5f;        // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
-const float WINDOW_SCORE_THRESHOLD = 0.8f;      // this should be the same as the ZNCC threshold in the kernel
-const int WINDOW_RADIUS = 3;                    // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
-const int DEPTH_STEPS = 16;                     // originally 16
-const int NORMAL_PERMUTATIONS = 16;             // originally 16
-//const int REFINE_ITERATIONS = 2;              // total number of refinement steps
-const int FRONTIER_MIN_SIZE = 100;              // early stop except 1st frontier
-const int MAX_ITERATIONS = 1000;                // adjust for image size
-const int TCAMS = 2;                            // avoid magic numbers
+const bool DBG_SINGLE_CAMERA = false;               // for debugging, only use 1 camera
+const bool SHOW_PROPAGATION_PREVIEW = true;         // shows the propagation frontier as it grows
+const bool SAVE_DEBUG_DATA = true;                  
+const bool REMOVE_SFM_POINTS = true;                // keep that on !!!
+const float DEPTH_STEP_SIZE_PX = 0.25f;             // no more guessing, step size in refCam pixels
+const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;      // 17.5 is ok
+const float NORMAL_DOT_THRESHOLD = 0.5f;            // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
+const float WINDOW_SCORE_THRESHOLD = 0.8f;          // this should be the same as the ZNCC threshold in the kernel
+const float REFINE_DEPTH_STEP_MULTIPLIER = 0.66f;   // multiplier for depth step size during refinement, smaller = finer steps
+const int WINDOW_RADIUS = 3;                        // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
+const int DEPTH_STEPS = 16;                         // originally 16
+const int NORMAL_PERMUTATIONS = 16;                 // originally 16
+const int REFINE_ITERATIONS = 1;                    // number of separate refinement steps
+const int FRONTIER_MIN_SIZE = 100;                  // early stop except 1st frontier
+const int MAX_ITERATIONS = 1000;                    // adjust for image size
+const int TCAMS = 2;                                // avoid magic numbers
 const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {3.0f, 5}, {6.0f, 5},  {12.0f, 5} };
 const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, {-1, 0}, {1, 0} }; // propagation pattern
 
@@ -55,73 +56,7 @@ const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, 
 // - add refine steps
 // - auto calculate DEPTH_STEP_SIZE somehow
 
-/*void reprojectViewToView(
-    const Camera& srcCam,    
-    const cv::Mat& srcDepthMap,
-	const cv::Mat& srcNormalMap,
-	const cv::Mat& srcScoreMap,
-	const Camera& dstCam,
-	cv::Mat& dstDepthMap,
-	cv::Mat& dstNormalMap,
-	cv::Mat& dstScoreMap,
-	const float scoreThreshold    
-    )
-{
-    cv::Mat srcR = srcCam.extrinsics.rotation;
-    cv::Mat srcT = srcCam.extrinsics.translation;
-    cv::Mat dstR = dstCam.extrinsics.rotation;
-    cv::Mat dstT = dstCam.extrinsics.translation;
-    cv::Mat srcKinv = srcCam.intrinsics.camera_matrix.inv();
-    cv::Mat dstK = dstCam.intrinsics.camera_matrix;
-
-    for (int r = 0; r < srcDepthMap.rows; ++r) {
-        for (int c = 0; c < srcDepthMap.cols; ++c) {
-            float depth = srcDepthMap.at<float>(r, c);
-            if (!std::isfinite(depth) || depth <= 0.f) continue;
-
-            float score = srcScoreMap.at<float>(r, c);
-            if (!std::isfinite(score) || score < scoreThreshold) continue;
-
-            cv::Vec3d ray = pixelRay(srcKinv, c, r);
-            cv::Mat Xsrc = (cv::Mat_<double>(3, 1) <<
-                ray[0] * depth, ray[1] * depth, ray[2] * depth);
-
-            // Camera coordinates -> world coordinates
-            cv::Mat Xworld = srcR.t() * (Xsrc - srcT);
-
-            // World coordinates -> destination camera coordinates
-            cv::Mat Xdst = dstR * Xworld + dstT;
-
-            double z = Xdst.at<double>(2, 0);
-            if (!std::isfinite(z) || z <= 0.0) continue;
-
-            double u = dstK.at<double>(0, 0) * Xdst.at<double>(0, 0) / z
-                + dstK.at<double>(0, 2);
-            double v = dstK.at<double>(1, 1) * Xdst.at<double>(1, 0) / z
-                + dstK.at<double>(1, 2);
-
-            if (!std::isfinite(u) || !std::isfinite(v) ||
-                u < 0.0 || u >= dstDepthMap.cols ||
-                v < 0.0 || v >= dstDepthMap.rows) {
-                continue;
-            }
-
-            int x = static_cast<int>(std::lround(u));
-            int y = static_cast<int>(std::lround(v));
-
-            // Rounding can move a coordinate at the upper edge out of bounds.
-            if (x >= dstDepthMap.cols || y >= dstDepthMap.rows) continue;
-
-            float& dstDepth = dstDepthMap.at<float>(y, x);
-            if (dstDepth <= 0.f || z < dstDepth) {
-                dstDepth = static_cast<float>(z);
-                dstNormalMap.at<cv::Vec3f>(y, x) = srcNormalMap.at<cv::Vec3f>(r, c);
-                dstScoreMap.at<float>(y, x) = score; // this one is empty
-            }
-        }
-    }
-}*/
-
+// move to utils
 void reprojectViewToView(
     const Camera& srcCam,
     const cv::Mat& srcDepthMap,
@@ -140,7 +75,6 @@ void reprojectViewToView(
 
     const cv::Mat srcKinv = srcCam.intrinsics.camera_matrix.inv();
     const cv::Mat& dstK = dstCam.intrinsics.camera_matrix;
-
 	
     const cv::Mat R_srcToDst = dstR * srcR.t(); // relative rotation from source camera to destination camera
 
@@ -164,7 +98,6 @@ void reprojectViewToView(
             if (!std::isfinite(z) || z <= 0.0) continue;
 
             const double u = dstK.at<double>(0, 0) * Xdst.at<double>(0, 0) / z + dstK.at<double>(0, 2); // project to dst
-
             const double v = dstK.at<double>(1, 1) * Xdst.at<double>(1, 0) / z + dstK.at<double>(1, 2);
 
             if (!std::isfinite(u) || !std::isfinite(v) || u < 0.0 || u >= dstDepthMap.cols || v < 0.0 || v >= dstDepthMap.rows) continue;
@@ -179,7 +112,7 @@ void reprojectViewToView(
             
 			const bool destinationEmpty = dstDepth <= 0.f || !std::isfinite(dstDepth); // ignore invalid depths
 
-            const bool replace = destinationEmpty || score > dstScore || (score == dstScore && z < dstDepth);
+			const bool replace = destinationEmpty || score > dstScore || (score == dstScore && z < dstDepth); // primitive z-buffering with score
 
             if (!replace) continue;
             
@@ -195,7 +128,6 @@ void reprojectViewToView(
                 static_cast<float>(normalDst.at<double>(2, 0)));
 
 			// should check if the normal is facing the camera
-
             float dotProduct = dstNormal[0] * Xdst.at<double>(0, 0) +
                 dstNormal[1] * Xdst.at<double>(1, 0) +
 				dstNormal[2] * Xdst.at<double>(2, 0); 
@@ -282,14 +214,6 @@ int main() {
 
         cv::Mat scoreMapHost = cv::Mat::zeros(IMG_HEIGHT, IMG_WIDTH, CV_32FC1);
 
-        /*for (const auto& cam : allDepthMaps) {
-			int srcCamIdx = cam.first;
-			if (srcCamIdx == refCamIdx) continue; // skip self
-            reprojectViewToView(cameras[srcCamIdx], allDepthMaps[srcCamIdx], allNormalMaps[srcCamIdx], allScoreMaps[srcCamIdx],
-				cameras[refCamIdx], refDepthNormals.depthMap, refDepthNormals.normalMap, scoreMapHost, WINDOW_SCORE_THRESHOLD);
-            bool wait = 1;
-		}*/
-
 		int camsToReproject = std::min(static_cast<int>(cameraAngle[refCamIdx].size()), 2); // limit to 2 cameras for speed
 
         for (const auto& cam : cameraAngle[refCamIdx]) {
@@ -300,12 +224,9 @@ int main() {
             reprojectViewToView(cameras[srcCamIdx], allDepthMaps[srcCamIdx], allNormalMaps[srcCamIdx], allScoreMaps[srcCamIdx],
                 cameras[refCamIdx], refDepthNormals.depthMap, refDepthNormals.normalMap, scoreMapHost, WINDOW_SCORE_THRESHOLD);
 			camsToReproject--;
-		}
-
-        
+		}        
 
         const float medianDepth = cloudLoader.getMedianDepth();
-
 		const float calculatedDepthStepSizeTarget0 = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx0], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), DEPTH_STEP_SIZE_PX);
 		const float calculatedDepthStepSizeTarget1 = calcDepthStepForPixelShift(cameras[refCamIdx], cameras[targetIdx1], medianDepth, cv::Point2d(IMG_WIDTH / 2.0, IMG_HEIGHT / 2.0), DEPTH_STEP_SIZE_PX);
 
@@ -326,9 +247,7 @@ int main() {
 
         // refine begin
 
-        size_t refineStep = 0;
-
-        
+        size_t refineStep = 0;        
 
         std::vector<FrontierPoint> frontierPoints;
 
