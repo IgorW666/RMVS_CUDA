@@ -18,20 +18,21 @@
 // i should probably make some Params structures
 const bool DBG_SINGLE_CAMERA = false;               // for debugging, only use 1 camera
 const bool SHOW_PROPAGATION_PREVIEW = true;         // shows the propagation frontier as it grows
-const bool SAVE_DEBUG_DATA = true;                  
+const bool SAVE_DEBUG_DATA = false;                 // save depth, normal, score maps as images and normal permutations as xyz
 const bool REMOVE_SFM_POINTS = true;                // keep that on !!!
 const float DEPTH_STEP_SIZE_PX = 0.25f;             // no more guessing, step size in refCam pixels
 const float BEST_CAMERA_ANGLE_DEGREES = 17.5f;      // 17.5 is ok
-const float NORMAL_DOT_THRESHOLD = 0.5f;            // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
+const float NORMAL_DOT_THRESHOLD = 0.75f;           // dot product of normal and camera direction, used to filter out normals that are facing away from the camera
 const float WINDOW_SCORE_THRESHOLD = 0.8f;          // this should be the same as the ZNCC threshold in the kernel
-const float REFINE_DEPTH_STEP_MULTIPLIER = 0.66f;   // multiplier for depth step size during refinement, smaller = finer steps
+const float REFINE_DEPTH_STEP_MULTIPLIER = 0.5f;    // multiplier for depth step size during refinement, smaller = finer steps
 const int WINDOW_RADIUS = 3;                        // 3-5 works well << if clouds come out noisy then this is too small, if clouds come out "oversmoothed" then this is too large
 const int DEPTH_STEPS = 16;                         // originally 16
 const int NORMAL_PERMUTATIONS = 16;                 // originally 16
 const int REFINE_ITERATIONS = 1;                    // number of separate refinement steps
 const int FRONTIER_MIN_SIZE = 100;                  // early stop except 1st frontier
 const int MAX_ITERATIONS = 1000;                    // adjust for image size
-const int TCAMS = 2;                                // avoid magic numbers
+const int TCAMS = 2;                                // not a parameter really, this is just the way the kernel is written
+
 const std::vector<std::pair<float, int>> NORMAL_PERMUTATION_RINGS = { {3.0f, 5}, {6.0f, 5},  {12.0f, 5} };
 const std::vector<std::pair<int, int>> PROPAGATION_OFFSETS = { {0, -1}, {0, 1}, {-1, 0}, {1, 0} }; // propagation pattern
 
@@ -73,7 +74,6 @@ void reprojectViewToView(
     const cv::Mat& srcT = srcCam.extrinsics.translation;
     const cv::Mat& dstR = dstCam.extrinsics.rotation;
     const cv::Mat& dstT = dstCam.extrinsics.translation;
-
     const cv::Mat srcKinv = srcCam.intrinsics.camera_matrix.inv();
     const cv::Mat& dstK = dstCam.intrinsics.camera_matrix;
 	
@@ -133,7 +133,7 @@ void reprojectViewToView(
                 dstNormal[1] * Xdst.at<double>(1, 0) +
 				dstNormal[2] * Xdst.at<double>(2, 0); 
 
-            if (dotProduct < 0.5f) { // NORMAL_DOT_THRESHOLD ?
+            if (dotProduct < NORMAL_DOT_THRESHOLD) {
 				continue; // skip normals that are facing away from the camera
 			}   
 
@@ -150,11 +150,11 @@ void reprojectViewToView(
 
 int main() {    
 
-    std::string folderPath = "data\\crazy\\";
+    std::string folderPath = "data\\buddaFull\\";
     std::vector<Camera> cameras;
     {
         CameraLoader cameraLoader;
-        cameras = cameraLoader.loadFromCSV("data\\crazy\\crazy.csv");
+        cameras = cameraLoader.loadFromCSV("data\\buddaFull\\budda.csv");
     }
 
     if (cameras.size() < 3) {
@@ -167,10 +167,10 @@ int main() {
 
     NormalPermutationGenerator normalPermGen(NORMAL_PERMUTATIONS);
     std::vector<NormalPermutation> normalPermutations = normalPermGen.generateMulti(NORMAL_PERMUTATION_RINGS);
-	//std::vector<NormalPermutation> normalPermutations = { {0.0f, 0.0f} }; // only the parent normal, no permutations}
+	//std::vector<NormalPermutation> normalPermutations = { {0.0f, 0.0f} }; // only the parent normal, no permutations
 
     if (SAVE_DEBUG_DATA) {
-        normalPermGen.saveNormalsAsXyz("normals_debug.xyz", normalPermutations);
+        normalPermGen.saveNormalsAsXyz("dbg\\normals_debug.xyz", normalPermutations);
     }
 
 	const int numCameras = DBG_SINGLE_CAMERA ? 1 : static_cast<int>(cameras.size());
@@ -207,7 +207,7 @@ int main() {
 
         CloudLoader cloudLoader;
 
-        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\crazy\\crazy.xyz", cameras[refCamIdx], refImageGPU, true);
+        auto refDepthNormals = cloudLoader.loadXYZToDepthMapWithNormals("data\\buddaFull\\budda.xyz", cameras[refCamIdx], refImageGPU, true);
 
         const int IMG_WIDTH = refImageGPU.width;
         const int IMG_HEIGHT = refImageGPU.height;
@@ -248,7 +248,7 @@ int main() {
 
         // refine begin
 
-        size_t refineStep = 0;        
+        size_t refineStep = 0;                
 
         std::vector<FrontierPoint> frontierPoints;
 
@@ -345,7 +345,54 @@ int main() {
             }
         }
 
-        cv::destroyAllWindows();     
+        for (int refineIter = 0; refineIter < REFINE_ITERATIONS; ++refineIter) {
+            calculatedDepthStepSize *= REFINE_DEPTH_STEP_MULTIPLIER;
+            auto refineDepthSteps = generateDepthSteps(calculatedDepthStepSize, DEPTH_STEPS);
+            std::cout << "Refinement Iteration " << refineIter + 1 << ", new depth step size: " << calculatedDepthStepSize << std::endl;
+
+			// build a single frontier from all valid depth pixels
+			frontierPoints.clear();
+			int refineNonZeroCount = cv::countNonZero(refDepthNormals.depthMap > 0.f);
+			frontierPoints.reserve(refineNonZeroCount);
+
+            for (int y = 0; y < IMG_HEIGHT; ++y) {
+                for (int x = 0; x < IMG_WIDTH; ++x) {
+                    float d = refDepthNormals.depthMap.at<float>(y, x);
+                    if (d > 0.f) {
+                        cv::Vec3f normal = refDepthNormals.normalMap.at<cv::Vec3f>(y, x);
+                        FrontierPoint fp;
+                        fp.x = x;
+                        fp.y = y;
+                        fp.depth = d;
+                        fp.normal = make_float3(normal[0], normal[1], normal[2]);
+                        frontierPoints.push_back(fp);
+                    }
+                }
+			}
+
+            std::vector<ResultPoint> results = processor.computeZNCCDualTargets(
+                refImageGPU,
+                targetImage0GPU,
+                targetImage1GPU,
+                refDepthNormals.depthMap,
+                frontierPoints,
+                refineDepthSteps,
+                static_cast<int>(normalPermutations.size()));
+
+			// return points with better score and update depth map, normal map and visited mask
+            for (const auto& rp : results) {
+                if (rp.y >= 0 && rp.y < IMG_HEIGHT && rp.x >= 0 && rp.x < IMG_WIDTH) {
+                    float& currentScore = scoreMapHost.at<float>(rp.y, rp.x);
+                    if (rp.znccScore > currentScore) { // only update if the new score is better
+                        refDepthNormals.depthMap.at<float>(rp.y, rp.x) = rp.depth;
+                        refDepthNormals.normalMap.at<cv::Vec3f>(rp.y, rp.x) = cv::Vec3f(rp.normal.x, rp.normal.y, rp.normal.z);
+                        currentScore = rp.znccScore;
+                    }
+                }
+			}
+		}
+
+        cv::destroyAllWindows();
 
         // refine end
 
@@ -353,16 +400,15 @@ int main() {
         saveCloudsAsXyz(pointCloudFilename, refDepthNormals.normalMap, refDepthNormals.depthMap, cameras[refCamIdx], true);
 
         if (SAVE_DEBUG_DATA) {
-            saveNormalMapPng("result_normal_map_" + std::to_string(refCamIdx) + ".png", refDepthNormals.normalMap, refDepthNormals.depthMap);
+            saveNormalMapPng("dbg\\result_normal_map_" + std::to_string(refCamIdx) + ".png", refDepthNormals.normalMap, refDepthNormals.depthMap);
             cv::Mat depthMapToSave, depthMapNormalized;
             cv::normalize(refDepthNormals.depthMap, depthMapNormalized, 0, 1, cv::NORM_MINMAX);
             depthMapNormalized.convertTo(depthMapToSave, CV_8U, 255.0f);
-            cv::imwrite("final_depth_map_" + std::to_string(refCamIdx) + ".png", depthMapToSave);
-
+            cv::imwrite("dbg\\final_depth_map_" + std::to_string(refCamIdx) + ".png", depthMapToSave);
 			cv::Mat scoreMapToSave, scoreMapNormalized;
 			cv::normalize(scoreMapHost, scoreMapNormalized, 0, 1, cv::NORM_MINMAX);
 			scoreMapNormalized.convertTo(scoreMapToSave, CV_8U, 255.0f);
-			cv::imwrite("final_score_map_" + std::to_string(refCamIdx) + ".png", scoreMapToSave);
+			cv::imwrite("dbg\\final_score_map_" + std::to_string(refCamIdx) + ".png", scoreMapToSave);
         }
 
         imageHandler.freeGPUImage(refImageGPU);
