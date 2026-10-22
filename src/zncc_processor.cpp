@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually)
+constexpr float znccThreshold = 0.8f; // threshold for ZNCC score to consider a hypothesis valid (for all score actually) << this shoulbe passed as parameter in the constructor
 constexpr int localDepthWindowOffset = 3; 
 
 ZNCCProcessor::ZNCCProcessor(int imgWidth, int imgHeight, int windowRadius)
