@@ -1,6 +1,6 @@
 # CUDA MVS
 
-Another attempt at **Multi-View Stereo (MVS)** — this time using CUDA.
+Another attempt at **Multi-View Stereo (MVS)** — this time using CUDA. A simple homography based patch-match style MVS with "growing" reconstruction propagation
 
 ## Input Data
 
